@@ -1,0 +1,23 @@
+@echo off
+cd /d %~dp0
+echo === Install deps ===
+py -m pip install --upgrade pip
+py -m pip install -r requirements.txt
+
+REM (daca PySimpleGUI are erori cu indexul implicit, decomenteaza liniile de mai jos)
+REM py -m pip uninstall -y PySimpleGUI
+REM py -m pip cache purge
+REM py -m pip install -i https://PySimpleGUI.net/install PySimpleGUI==5.0.8.3
+
+echo === Install PyInstaller ===
+py -m pip install pyinstaller==6.10.0
+
+echo === Build EXE (onefile) ===
+py -m PyInstaller --noconfirm --onefile --name Facepost ^
+  --add-data "config.json;." ^
+  facepost_client.py
+
+echo.
+echo === GATA ===
+echo Executabil: dist\Facepost.exe
+pause
