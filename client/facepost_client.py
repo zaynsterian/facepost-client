@@ -1,327 +1,260 @@
-# client/facepost_client.py
-import os
-import sys
-import json
-import time
-import threading
-from datetime import datetime, timedelta
+# facepost_client.py  (Tkinter UI)
+import os, sys, json, time, logging, traceback
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
 import requests
-import PySimpleGUI as sg
 
-# =========================
-# CONFIG SERVER ENDPOINTS
-# =========================
-SERVER_BASE    = "https://facepost.onrender.com"   # <- pune URL-ul tău Render
-CHECK_URL      = f"{SERVER_BASE}/check"
-BIND_URL       = f"{SERVER_BASE}/bind"
-ISSUE_URL      = f"{SERVER_BASE}/issue"
-SUSPEND_URL    = f"{SERVER_BASE}/suspend"
-RENEW_URL      = f"{SERVER_BASE}/renew"
-CLIENT_VER_URL = f"{SERVER_BASE}/client-version"
-CLIENT_DL_URL  = f"{SERVER_BASE}/client-download"
+APP_NAME = "Facepost"
+API_BASE = "https://facepost.onrender.com"   # <- schimbă dacă ai alt URL
 
-APP_VERSION = "1.1.0"   # versiunea EXE curentă
+# --- log setup ---
+LOG_DIR = os.path.join(os.getenv('LOCALAPPDATA', os.getcwd()), APP_NAME, 'logs')
+os.makedirs(LOG_DIR, exist_ok=True)
+LOG_FILE = os.path.join(LOG_DIR, 'app.log')
+logging.basicConfig(filename=LOG_FILE, level=logging.DEBUG,
+                    format="%(asctime)s [%(levelname)s] %(message)s")
 
-CONFIG_FILE = "config.json"
-DEFAULT_CONFIG = {
-    "email": "",
-    "license_key": "",
-    "groups": "",
-    "post_text": "",
-    "images_folder": "",
-    "daily_time": "10:00",        # HH:MM (24h)
-    "device_fingerprint": "",     # se completează la primul bind
-}
-
-# =========================
-# UTILS
-# =========================
-def load_config():
-    if not os.path.exists(CONFIG_FILE):
-        save_config(DEFAULT_CONFIG.copy())
-    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-def save_config(cfg):
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
-
-def boxed(msg):
-    return f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
-
-def show_error(msg):
-    sg.popup_error(f"Facepost • Eroare\n\n{msg}")
-
-def show_info(msg):
-    sg.popup_ok(f"Facepost\n\n{msg}")
-
-def get_exe_dir():
-    if getattr(sys, 'frozen', False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
-
-# =========================
-# LICENSING
-# =========================
-def device_fingerprint():
-    """O amprentă simplă a device-ului (poți îmbunătăți cu MAC, CPU id etc.)."""
-    base = os.getenv("COMPUTERNAME", "WIN") + "_" + os.getenv("USERNAME", "USER")
-    return f"FP-{abs(hash(base))}"
-
-def server_check(email, fingerprint):
+def excepthook(exc_type, exc, tb):
+    logging.exception("Uncaught", exc_info=(exc_type, exc, tb))
     try:
-        payload = {"email": email, "fingerprint": fingerprint}
-        r = requests.post(CHECK_URL, json=payload, timeout=15)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
+        messagebox.showerror(APP_NAME, f"{exc_type.__name__}: {exc}\n\nLog: {LOG_FILE}")
+    finally:
+        sys.exit(1)
 
-def server_bind(email, fingerprint):
-    try:
-        payload = {"email": email, "fingerprint": fingerprint}
-        r = requests.post(BIND_URL, json=payload, timeout=15)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
+sys.excepthook = excepthook
 
-# =========================
-# AUTO-UPDATE
-# =========================
-def get_latest_version():
-    try:
-        r = requests.get(CLIENT_VER_URL, timeout=10)
-        r.raise_for_status()
-        return r.json()
-    except Exception:
-        return None
+# --- config helpers ---
+CFG_DIR = os.path.join(os.getenv('APPDATA', os.getcwd()), APP_NAME)
+CFG_FILE = os.path.join(CFG_DIR, "config.json")
+os.makedirs(CFG_DIR, exist_ok=True)
 
-def download_new_exe(download_url, target_path):
-    try:
-        with requests.get(download_url, stream=True, timeout=60) as r:
-            r.raise_for_status()
-            with open(target_path, "wb") as f:
-                for chunk in r.iter_content(chunk_size=1024 * 256):
-                    if chunk:
-                        f.write(chunk)
-        return True
-    except Exception:
-        return False
+def load_cfg():
+    if os.path.exists(CFG_FILE):
+        with open(CFG_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {
+        "email": "",
+        "license_key": "",
+        "group_urls": [],
+        "images_folder": "",
+        "post_text": "",
+        "delay_sec": 120
+    }
 
-def try_update_if_needed(window=None):
-    """Verifică versiunea și, dacă e mai nouă, descarcă și înlocuiește EXE-ul."""
-    data = get_latest_version()
-    if not data or "version" not in data:
-        return False
+def save_cfg(cfg):
+    with open(CFG_FILE, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=2)
 
-    latest = str(data.get("version", "")).strip()
-    if latest and latest != APP_VERSION:
-        # cerem link-ul de download
+# --- API helpers ---
+def api_post(path, payload):
+    url = f"{API_BASE}{path}"
+    r = requests.post(url, json=payload, timeout=20)
+    r.raise_for_status()
+    return r.json()
+
+def check_license(email, fingerprint="FP-DEVICE-1"):
+    return api_post("/check", {"email": email, "fingerprint": fingerprint})
+
+def bind_license(email, fingerprint="FP-DEVICE-1"):
+    return api_post("/bind", {"email": email, "fingerprint": fingerprint})
+
+# --- UI: Login Window ---
+class LoginWindow(tk.Toplevel):
+    def __init__(self, master, cfg):
+        super().__init__(master)
+        self.title(f"{APP_NAME} - Login")
+        self.resizable(False, False)
+        self.cfg = cfg
+        pad = 10
+
+        self.columnconfigure(1, weight=1)
+
+        ttk.Label(self, text="Email").grid(row=0, column=0, padx=pad, pady=(pad,5), sticky="w")
+        self.email_var = tk.StringVar(value=cfg.get("email",""))
+        ttk.Entry(self, textvariable=self.email_var, width=40).grid(row=0, column=1, padx=pad, pady=(pad,5), sticky="ew")
+
+        ttk.Label(self, text="Licență").grid(row=1, column=0, padx=pad, pady=5, sticky="w")
+        self.lic_var = tk.StringVar(value=cfg.get("license_key",""))
+        ttk.Entry(self, textvariable=self.lic_var, width=40, show="*").grid(row=1, column=1, padx=pad, pady=5, sticky="ew")
+
+        self.msg = ttk.Label(self, text="", foreground="#a00")
+        self.msg.grid(row=2, column=0, columnspan=2, padx=pad, pady=5, sticky="w")
+
+        btn = ttk.Button(self, text="Continuă", command=self.do_login)
+        btn.grid(row=3, column=0, columnspan=2, padx=pad, pady=(5,pad))
+
+        self.bind("<Return>", lambda e: self.do_login())
+
+        # focus
+        self.after(100, lambda: self.email_var.set(self.email_var.get()) )
+
+    def do_login(self):
+        email = self.email_var.get().strip()
+        lic = self.lic_var.get().strip()
+        if not email or not lic:
+            self.msg.config(text="Completează email și licență.")
+            return
         try:
-            r = requests.get(CLIENT_DL_URL, timeout=10)
-            r.raise_for_status()
-            url = r.json().get("url")
-        except Exception:
-            url = None
+            # opțional: poți valida că licența e non-empty; check-ul real îl face serverul
+            # înregistrăm device-ul (first bind e idempotent la serverul tău)
+            bind_license(email, "FP-DEVICE-1")
+            resp = check_license(email, "FP-DEVICE-1")
+            if resp.get("status") == "ok":
+                self.cfg["email"] = email
+                self.cfg["license_key"] = lic
+                save_cfg(self.cfg)
+                self.destroy()
+            else:
+                self.msg.config(text=f"Licență invalidă / expirat.")
+        except requests.HTTPError as e:
+            logging.exception("HTTP error on login")
+            self.msg.config(text=f"Server: {e.response.status_code}")
+        except Exception as e:
+            logging.exception("Login error")
+            self.msg.config(text=str(e))
 
-        if url:
-            exe_dir = get_exe_dir()
-            new_path = os.path.join(exe_dir, "Facepost_new.exe")
-            ok = download_new_exe(url, new_path)
-            if ok:
-                # pe Windows nu poți suprascrie exe-ul curent. Lansăm un updater
-                # minimalist care închide aplicația și înlocuiește fișierul.
-                updater_path = os.path.join(exe_dir, "updater.bat")
-                current_exe = sys.executable if getattr(sys, "frozen", False) else None
+# --- UI: Main Window ---
+class MainApp(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title(APP_NAME)
+        self.geometry("820x640")
+        self.minsize(780, 560)
+        self.cfg = load_cfg()
 
-                with open(updater_path, "w", encoding="utf-8") as f:
-                    f.write(f"""@echo off
-timeout /t 1 >nul
-taskkill /f /pid {os.getpid()} >nul 2>&1
-timeout /t 1 >nul
-copy /y "{new_path}" "{current_exe}" >nul
-del /f "{new_path}"
-start "" "{current_exe}"
-del "%~f0"
-""")
-                # anunțăm userul și rulăm updaterul
-                if window:
-                    window.write_event_value("-LOG-", boxed(f"Update disponibil: {latest}. Se aplică acum..."))
-                os.startfile(updater_path)
-                return True
-    return False
+        # dacă nu avem email/licență → login
+        if not self.cfg.get("email") or not self.cfg.get("license_key"):
+            self.wait_visibility()
+            LoginWindow(self, self.cfg).wait_window()
 
-# =========================
-# POSTING DUMMY (Preview)
-# =========================
-def list_images(folder):
-    if not folder or not os.path.isdir(folder):
-        return []
-    exts = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
-    files = [os.path.join(folder, f) for f in os.listdir(folder)]
-    return [f for f in files if os.path.splitext(f)[-1].lower() in exts]
+        # dacă tot nu avem (user a închis loginul), închidem
+        if not self.cfg.get("email"):
+            self.after(50, self.destroy)
+            return
 
-def perform_post(groups_csv, text, images_folder, log_cb):
-    """
-    Aici integrezi funcția ta reală de postare în grupuri.
-    Deocamdată doar loghează ce ar face.
-    """
-    groups = [g.strip() for g in groups_csv.splitlines() if g.strip()]
-    imgs = list_images(images_folder)
+        self.create_widgets()
 
-    if not groups:
-        log_cb(boxed("Niciun grup definit."))
-        return
+    def create_widgets(self):
+        pad = 10
 
-    log_cb(boxed(f"Încep postarea în {len(groups)} grupuri..."))
-    log_cb(boxed(f"Text: {text[:60]}{'...' if len(text)>60 else ''}"))
-    log_cb(boxed(f"Imagini găsite: {len(imgs)}"))
+        frm = ttk.Frame(self)
+        frm.pack(fill="both", expand=True, padx=pad, pady=pad)
 
-    # >>> aici chemi selenium-ul tău de postare, cu delay-urile tale <<<
-    for i, g in enumerate(groups, start=1):
-        time.sleep(1)  # simulez un delay
-        log_cb(boxed(f"[{i}/{len(groups)}] Postare în: {g} ... OK"))
+        # Group URLs
+        ttk.Label(frm, text="Group URLs (unul pe linie)").grid(row=0, column=0, sticky="w")
+        self.urls_txt = tk.Text(frm, height=8)
+        self.urls_txt.grid(row=1, column=0, columnspan=3, sticky="nsew", pady=(0,pad))
+        frm.rowconfigure(1, weight=1)
+        frm.columnconfigure(0, weight=1)
 
-    log_cb(boxed("Postare finalizată."))
+        if self.cfg.get("group_urls"):
+            self.urls_txt.insert("1.0", "\n".join(self.cfg["group_urls"]))
 
-# =========================
-# SCHEDULER
-# =========================
-def seconds_until(target_hhmm):
-    now = datetime.now()
-    hour, minute = map(int, target_hhmm.split(":"))
-    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    if target <= now:
-        target += timedelta(days=1)
-    return int((target - now).total_seconds())
+        # Images folder
+        ttk.Label(frm, text="Images folder").grid(row=2, column=0, sticky="w")
+        self.images_var = tk.StringVar(value=self.cfg.get("images_folder",""))
+        ttk.Entry(frm, textvariable=self.images_var).grid(row=2, column=1, sticky="ew")
+        ttk.Button(frm, text="Browse", command=self.pick_folder).grid(row=2, column=2, padx=(5,0), sticky="w")
+        frm.columnconfigure(1, weight=1)
 
-def start_daily_job(cfg, window):
-    def runner():
-        while True:
-            wait_s = seconds_until(cfg["daily_time"])
-            window.write_event_value("-LOG-", boxed(f"Următoarea postare la {cfg['daily_time']} (în ~{wait_s//60} min)"))
-            time.sleep(wait_s)
-            perform_post(cfg["groups"], cfg["post_text"], cfg["images_folder"], lambda m: window.write_event_value("-LOG-", m))
-    th = threading.Thread(target=runner, daemon=True)
-    th.start()
-    return th
+        # Post text
+        ttk.Label(frm, text="Post text").grid(row=3, column=0, sticky="w", pady=(pad,0))
+        self.text_txt = tk.Text(frm, height=10)
+        self.text_txt.grid(row=4, column=0, columnspan=3, sticky="nsew")
+        frm.rowconfigure(4, weight=1)
 
-# =========================
-# UI – LOGIN & MAIN
-# =========================
-def login_window():
-    layout = [
-        [sg.Text("Email"), sg.Input(key="-EMAIL-", size=(40,1))],
-        [sg.Text("Licență"), sg.Input(key="-LIC-", size=(40,1), password_char="*")],
-        [sg.Button("Login", key="-LOGIN-", bind_return_key=True)]
-    ]
-    win = sg.Window("Facepost • Login", layout, modal=True)
-    return win
+        if self.cfg.get("post_text"):
+            self.text_txt.insert("1.0", self.cfg["post_text"])
 
-def main_window(cfg):
-    sg.theme("DarkBlue3")
-    left = [
-        [sg.Text("Group URLs (unul pe linie)")],
-        [sg.Multiline(cfg.get("groups",""), key="-GROUPS-", size=(50,10))],
-        [sg.Text("Post text")],
-        [sg.Multiline(cfg.get("post_text",""), key="-TEXT-", size=(50,8))],
-        [sg.Text("Imagini"), sg.Input(cfg.get("images_folder",""), key="-IMGF-", size=(36,1)), sg.FolderBrowse("Select")],
-        [sg.Text("Ora zilnică (HH:MM)"), sg.Input(cfg.get("daily_time","10:00"), key="-TIME-", size=(8,1))],
-        [sg.Button("Preview", key="-PREVIEW-"), sg.Button("Run acum", key="-RUN-"), sg.Button("Salvează", key="-SAVE-")],
-    ]
-    right = [
-        [sg.Text("Status / Log")],
-        [sg.Multiline("", key="-LOG-", size=(70,22), autoscroll=True, disabled=True)],
-        [sg.Button("Verifică update", key="-UPDATE-"), sg.Push(), sg.Button("Exit")],
-    ]
-    col = [[sg.Column(left), sg.VSeperator(), sg.Column(right)]]
-    win = sg.Window("Facepost", col, finalize=True, resizable=True)
-    return win
+        # Delay
+        ttk.Label(frm, text="Delay (sec)").grid(row=5, column=0, sticky="w", pady=(pad,0))
+        self.delay_var = tk.IntVar(value=int(self.cfg.get("delay_sec",120)))
+        ttk.Spinbox(frm, from_=30, to=3600, textvariable=self.delay_var, width=8).grid(row=5, column=1, sticky="w")
 
-def app():
-    cfg = load_config()
-    # login dacă nu avem licență sau email
-    if not cfg.get("email") or not cfg.get("license_key"):
-        w = login_window()
-        while True:
-            e, v = w.read()
-            if e in (sg.WINDOW_CLOSED,):
-                w.close()
+        # Buttons
+        btns = ttk.Frame(frm)
+        btns.grid(row=6, column=0, columnspan=3, pady=(pad,0), sticky="e")
+        ttk.Button(btns, text="Preview", command=self.preview).pack(side="left", padx=5)
+        ttk.Button(btns, text="Save", command=self.save_local).pack(side="left", padx=5)
+        ttk.Button(btns, text="Run", command=self.run_script).pack(side="left", padx=5)
+
+        self.status = ttk.Label(frm, text="")
+        self.status.grid(row=7, column=0, columnspan=3, sticky="w", pady=(pad,0))
+
+    def pick_folder(self):
+        path = filedialog.askdirectory()
+        if path:
+            self.images_var.set(path)
+
+    def preview(self):
+        urls = self._get_urls()
+        imgs = self._get_images()
+        text = self.text_txt.get("1.0", "end").strip()
+        messagebox.showinfo(APP_NAME, f"{len(urls)} grupuri\n{len(imgs)} imagini\n\n{text[:200]}...")
+
+    def save_local(self):
+        self.cfg["group_urls"] = self._get_urls()
+        self.cfg["images_folder"] = self.images_var.get().strip()
+        self.cfg["post_text"] = self.text_txt.get("1.0","end").strip()
+        self.cfg["delay_sec"] = int(self.delay_var.get())
+        save_cfg(self.cfg)
+        self.status.config(text="Config salvat.")
+        logging.info("Config saved")
+
+    def run_script(self):
+        # aici vei apela funcțiile tale de automatisare (Selenium/Facebook poster)
+        # momentan doar validăm licența înainte de execuție
+        try:
+            resp = check_license(self.cfg["email"], "FP-DEVICE-1")
+            if resp.get("status") != "ok":
+                messagebox.showerror(APP_NAME, "Licență invalidă sau expirată.")
                 return
-            if e == "-LOGIN-":
-                email = v["-EMAIL-"].strip().lower()
-                lic = v["-LIC-"].strip()
-                if not email or not lic:
-                    show_error("Completează email + licență.")
-                    continue
-                # facem bind/check
-                cfg["email"] = email
-                cfg["license_key"] = lic
-                if not cfg.get("device_fingerprint"):
-                    cfg["device_fingerprint"] = device_fingerprint()
+        except Exception as e:
+            logging.exception("check failed")
+            messagebox.showerror(APP_NAME, f"Eroare verificare licență:\n{e}")
+            return
 
-                # În mod normal aici ai verifica licența cu /check (și/sau bind).
-                # Exemplu minimal:
-                resp = server_check(email, cfg["device_fingerprint"])
-                if resp.get("status") == "ok":
-                    save_config(cfg)
-                    show_info("Autentificare OK.")
-                    w.close()
-                    break
-                else:
-                    show_error(f"Eroare licență: {resp}")
-                    # nu ieșim din login
-        # continuăm în main window
+        urls = self._get_urls()
+        imgs = self._get_images()
+        text = self.text_txt.get("1.0","end").strip()
+        delay = int(self.delay_var.get())
 
-    # Fereastra principală
-    win = main_window(cfg)
+        if not urls:
+            messagebox.showwarning(APP_NAME, "Nu ai introdus niciun grup.")
+            return
+        if not imgs:
+            messagebox.showwarning(APP_NAME, "Nu există imagini în folder.")
+            return
 
-    # Pornește schedulerul în background
-    sched_thread = start_daily_job(cfg, win)
+        # TODO: integrează aici rutina ta de postare (selenium)
+        # Deocamdată simulăm:
+        self.status.config(text="Rulează… (simulat)")
+        self.update_idletasks()
+        try:
+            for i, g in enumerate(urls, 1):
+                logging.info(f"[SIM] Post to {g} cu {len(imgs)} imagini (delay {delay}s)")
+                self.status.config(text=f"[{i}/{len(urls)}] Post la: {g}")
+                self.update()
+                time.sleep(1)  # scurt în loc de delay real
+            self.status.config(text="Gata (simulat)")
+            messagebox.showinfo(APP_NAME, "Postare simulată terminată.")
+        except Exception as e:
+            logging.exception("run error")
+            messagebox.showerror(APP_NAME, f"Eroare la rulare:\n{e}")
 
-    # Mesaj inițial
-    win["-LOG-"].update(boxed("Aplicația a pornit. Verific update-uri...") + "\n", append=True)
-    try_update_if_needed(win)
+    def _get_urls(self):
+        raw = self.urls_txt.get("1.0","end").strip()
+        return [u.strip() for u in raw.splitlines() if u.strip()]
 
-    while True:
-        e, v = win.read()
-        if e in (sg.WINDOW_CLOSED, "Exit"):
-            break
-
-        if e == "-SAVE-":
-            cfg["groups"] = v["-GROUPS-"]
-            cfg["post_text"] = v["-TEXT-"]
-            cfg["images_folder"] = v["-IMGF-"]
-            cfg["daily_time"] = v["-TIME-"]
-            save_config(cfg)
-            win["-LOG-"].update(boxed("Config salvat.") + "\n", append=True)
-
-        elif e == "-PREVIEW-":
-            imgs = list_images(v["-IMGF-"])
-            win["-LOG-"].update(boxed(f"PREVIEW: {len(imgs)} imagini, primele 3: {imgs[:3]}") + "\n", append=True)
-            win["-LOG-"].update(boxed(f"Text: {v['-TEXT-'][:100]}{'...' if len(v['-TEXT-'])>100 else ''}") + "\n", append=True)
-            gr = [g.strip() for g in v["-GROUPS-"].splitlines() if g.strip()]
-            win["-LOG-"].update(boxed(f"Vor fi postate {len(gr)} grupuri.") + "\n", append=True)
-
-        elif e == "-RUN-":
-            tmp_cfg = {
-                "groups": v["-GROUPS-"],
-                "post_text": v["-TEXT-"],
-                "images_folder": v["-IMGF-"],
-            }
-            perform_post(tmp_cfg["groups"], tmp_cfg["post_text"], tmp_cfg["images_folder"], lambda m: win["-LOG-"].update(m + "\n", append=True))
-
-        elif e == "-UPDATE-":
-            updated = try_update_if_needed(win)
-            if not updated:
-                win["-LOG-"].update(boxed("Nu există update nou sau descărcarea a eșuat." ) + "\n", append=True)
-
-        elif e == "-LOG-":
-            # evenimente trimise din threaduri
-            win["-LOG-"].update(v["-LOG-"] + "\n", append=True)
-
-    win.close()
+    def _get_images(self):
+        folder = self.images_var.get().strip()
+        if not folder or not os.path.isdir(folder):
+            return []
+        exts = {".jpg",".jpeg",".png",".webp",".gif"}
+        files = [os.path.join(folder,f) for f in os.listdir(folder) if os.path.splitext(f)[1].lower() in exts]
+        return files
 
 if __name__ == "__main__":
-    app()
+    app = MainApp()
+    if app:
+        app.mainloop()
