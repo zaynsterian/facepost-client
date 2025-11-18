@@ -6,6 +6,7 @@ import PySimpleGUI as sg
 # ---------------------------
 #   CONFIG: load/save helpers
 # ---------------------------
+APP_VERSION = "1.1.1"
 APP_NAME = "Facepost"
 
 def appdata_dir() -> Path:
@@ -240,3 +241,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
