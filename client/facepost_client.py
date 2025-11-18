@@ -1,244 +1,481 @@
-import os, sys, json, time, re
-from pathlib import Path
+import os
+import sys
+import json
+import time
+import threading
+from uuid import uuid4
+from dataclasses import dataclass, asdict
+from typing import List, Optional
 
-import PySimpleGUI as sg
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
 
-# ---------------------------
-#   CONFIG: load/save helpers
-# ---------------------------
-APP_VERSION = "1.1.1"
-APP_NAME = "Facepost"
+import requests
 
-def appdata_dir() -> Path:
-    if sys.platform.startswith("win"):
-        base = Path(os.environ.get("APPDATA", str(Path.home() / "AppData/Roaming")))
-        return base / APP_NAME
-    elif sys.platform == "darwin":
-        return Path.home() / "Library/Application Support" / APP_NAME
-    else:
-        return Path.home() / ".config" / APP_NAME
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.common.exceptions import WebDriverException
 
-def config_path() -> Path:
-    return appdata_dir() / "config.json"
+# ------------------ Config generale ------------------
 
-DEFAULT_CONFIG = {
-    "chrome_user_data_dir": "",
-    "images_folder": "",
-    "delay_sec": 120,
-    "simulate": True,               # implicit SIM pentru siguranță la primul run
-    "email": "",
-    "license_key": "",
-}
+LICENSE_API_BASE = "https://facepost.onrender.com"  # serverul tău de licențe
 
-def load_config() -> dict:
+# determinăm folderul unde stă EXE-ul / scriptul
+if getattr(sys, "frozen", False):
+    BASE_DIR = os.path.dirname(sys.executable)
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+CONFIG_PATH = os.path.join(BASE_DIR, "facepost_config.json")
+CHROMEDRIVER_PATH = os.path.join(BASE_DIR, "chromedriver.exe")
+
+
+@dataclass
+class AppConfig:
+    email: str = ""
+    device_id: str = ""
+    groups: List[str] = None
+    images_folder: str = ""
+    post_text: str = ""
+    delay_seconds: int = 120
+    chrome_profile_dir: str = ""
+    simulate_only: bool = True  # implicit rulăm în mod „simulat”
+
+
+def load_config() -> AppConfig:
+    if not os.path.exists(CONFIG_PATH):
+        cfg = AppConfig(groups=[])
+        # generăm un device_id la prima rulare
+        cfg.device_id = str(uuid4())
+        save_config(cfg)
+        return cfg
+
     try:
-        p = config_path()
-        if p.exists():
-            return {**DEFAULT_CONFIG, **json.loads(p.read_text(encoding="utf-8"))}
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        # back-compat / valori lipsă
+        data.setdefault("groups", [])
+        data.setdefault("simulate_only", True)
+        data.setdefault("device_id", str(uuid4()))
+        return AppConfig(**data)
     except Exception:
-        pass
-    return DEFAULT_CONFIG.copy()
+        # dacă ceva e corupt, pornim cu config nou
+        cfg = AppConfig(groups=[], device_id=str(uuid4()))
+        save_config(cfg)
+        return cfg
 
-def save_config(cfg: dict) -> None:
+
+def save_config(cfg: AppConfig) -> None:
+    data = asdict(cfg)
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+# ------------------ License check ------------------
+
+
+class LicenseError(Exception):
+    pass
+
+
+def check_license(email: str, device_id: str) -> dict:
+    email = (email or "").strip().lower()
+    if not email:
+        raise LicenseError("Te rog introdu o adresă de email.")
+
+    payload = {"email": email, "fingerprint": device_id}
+
     try:
-        ad = appdata_dir()
-        ad.mkdir(parents=True, exist_ok=True)
-        config_path().write_text(json.dumps(cfg, indent=2), encoding="utf-8")
-    except Exception as e:
-        sg.popup_error(f"Nu pot salva setările:\n{e}")
+        resp = requests.post(
+            f"{LICENSE_API_BASE}/check",
+            json=payload,
+            timeout=15,
+        )
+    except requests.RequestException as e:
+        raise LicenseError(f"Nu se poate contacta serverul de licențe: {e}")
 
-# ---------------------------
-#   VALIDĂRI & UTILITARE
-# ---------------------------
-def is_valid_fb_group_url(url: str) -> bool:
-    return bool(re.match(r"^https?://(www\.)?facebook\.com/groups/[\w\.\-]+/?$", url.strip()))
+    if resp.status_code != 200:
+        raise LicenseError(f"Răspuns neașteptat de la server ({resp.status_code}).")
 
-def ensure_first_run_wizard(cfg: dict) -> dict:
-    """Dacă lipsesc lucruri critice -> deschide wizardul Settings la pornire."""
-    need = not cfg["chrome_user_data_dir"]
-    if need:
-        cfg = show_settings_dialog(cfg, first_run=True)
-    return cfg
+    try:
+        data = resp.json()
+    except Exception:
+        raise LicenseError("Răspuns invalid de la server (nu e JSON).")
 
-# ---------------------------
-#   SETTINGS DIALOG
-# ---------------------------
-def show_settings_dialog(cfg: dict, first_run: bool=False) -> dict:
-    sg.theme("SystemDefault")
+    status = data.get("status", "error")
+    if status != "ok":
+        msg = data.get("message") or f"Licență invalidă (status: {status})."
+        raise LicenseError(msg)
 
-    layout = [
-        [sg.Text("Chrome user-data-dir", size=(20,1)),
-         sg.Input(cfg["chrome_user_data_dir"], key="-UD-", expand_x=True),
-         sg.FolderBrowse("Select")],
-        [sg.Text("Images folder (implicit)", size=(20,1)),
-         sg.Input(cfg["images_folder"], key="-IMGS-", expand_x=True),
-         sg.FolderBrowse("Select")],
-        [sg.Text("Delay (sec)", size=(20,1)),
-         sg.Input(str(cfg["delay_sec"]), key="-DELAY-", size=(8,1))],
-        [sg.Checkbox("Rulează în modul SIMULARE (fără postare reală)", key="-SIM-",
-                     default=cfg["simulate"])],
-        [sg.HorizontalSeparator()],
-        [sg.Text("Email (licență)", size=(20,1)),
-         sg.Input(cfg["email"], key="-EMAIL-", expand_x=True)],
-        [sg.Text("License key", size=(20,1)),
-         sg.Input(cfg["license_key"], key="-LIC-", expand_x=True, password_char="*")],
-        [sg.HorizontalSeparator()],
-        [sg.Button("Test config", key="-TEST-"), sg.Push(),
-         sg.Button("Salvează", key="-SAVE-", button_color=("white", "#6C5CE7")),
-         sg.Button("Anulează", key="-CANCEL-")]
-    ]
-    title = f"{APP_NAME} – Settings" if not first_run else f"{APP_NAME} – Configurare inițială"
-    win = sg.Window(title, layout, modal=True, finalize=True)
+    return data
 
-    new_cfg = cfg.copy()
-    while True:
-        ev, vals = win.read()
-        if ev in (sg.WIN_CLOSED, "-CANCEL-"):
-            break
 
-        if ev == "-TEST-":
-            msg = []
-            ud = vals["-UD-"].strip()
-            imgs = vals["-IMGS-"].strip()
-            dly = vals["-DELAY-"].strip()
-            if not ud or not Path(ud).exists():
-                msg.append("• Chrome user-data-dir NU este setat sau nu există.")
-            if imgs and not Path(imgs).exists():
-                msg.append("• Images folder indică un folder inexistent.")
-            if not dly.isdigit() or int(dly) < 0:
-                msg.append("• Delay trebuie să fie număr >= 0.")
-            if msg:
-                sg.popup_error("Probleme de configurare:\n\n" + "\n".join(msg))
-            else:
-                sg.popup_ok("Config OK ✅")
+# ------------------ Selenium posting logic ------------------
 
-        if ev == "-SAVE-":
+
+class Poster:
+    def __init__(self, cfg: AppConfig, log_callback=None):
+        self.cfg = cfg
+        self.log_callback = log_callback or (lambda msg: None)
+        self.driver: Optional[webdriver.Chrome] = None
+
+    def log(self, msg: str):
+        print(msg)
+        self.log_callback(msg)
+
+    def _build_driver(self):
+        if not os.path.exists(CHROMEDRIVER_PATH):
+            raise RuntimeError(
+                "chromedriver.exe nu a fost găsit lângă Facepost.exe.\n"
+                "Asigură-te că installerul copiază și chromedriver în același folder."
+            )
+
+        options = Options()
+        options.add_argument("--start-maximized")
+
+        if self.cfg.chrome_profile_dir:
+            options.add_argument(f"--user-data-dir={self.cfg.chrome_profile_dir}")
+
+        service = Service(CHROMEDRIVER_PATH)
+        try:
+            driver = webdriver.Chrome(service=service, options=options)
+        except WebDriverException as e:
+            raise RuntimeError(f"Eroare la pornirea Chrome: {e}")
+
+        self.driver = driver
+
+    def _collect_images(self) -> List[str]:
+        folder = (self.cfg.images_folder or "").strip()
+        if not folder:
+            return []
+
+        if not os.path.isdir(folder):
+            self.log(f"[WARN] Folderul de imagini nu există: {folder}")
+            return []
+
+        exts = (".jpg", ".jpeg", ".png", ".webp")
+        files = [
+            os.path.join(folder, fn)
+            for fn in sorted(os.listdir(folder))
+            if fn.lower().endswith(exts)
+        ]
+        return files
+
+    def _post_to_group(self, url: str, text: str, images: List[str]):
+        """
+        Aici pui logica ta reală de postare în grup.
+        Acum doar deschide pagina și așteaptă câteva secunde.
+        """
+        assert self.driver is not None
+        self.log(f"[INFO] Deschid grupul: {url}")
+        self.driver.get(url)
+        time.sleep(5)
+
+        # TODO: Înlocuiește cu logica ta:
+        # 1. Click pe "Creează o postare"
+        # 2. Introdu textul în editor
+        # 3. Încarcă imagini (dacă există)
+        # 4. Apasă pe "Publică"
+        #
+        # Ca exemplu, ceva de genul:
+        # create_btn = self.driver.find_element(By.XPATH, "//div[@role='button' and contains(., 'Creează o postare')]")
+        # create_btn.click()
+        # time.sleep(2)
+        # editor = self.driver.find_element(By.XPATH, "//div[@role='textbox']")
+        # editor.send_keys(text)
+        # etc.
+
+        self.log(f"[INFO] (DEMO) Am deschis grupul și aștept. Nu am postat nimic încă.")
+        time.sleep(3)
+
+    def run(self):
+        groups = [g.strip() for g in (self.cfg.groups or []) if g.strip()]
+        if not groups:
+            raise RuntimeError("Nu ai introdus niciun URL de grup.")
+
+        text = (self.cfg.post_text or "").strip()
+        if not text:
+            raise RuntimeError("Te rog introdu textul pentru postare.")
+
+        delay = int(self.cfg.delay_seconds or 0)
+        if delay < 10:
+            delay = 10
+
+        images = self._collect_images()
+
+        if self.cfg.simulate_only:
+            self.log("=== MOD SIMULARE ACTIV ===")
+            for idx, g in enumerate(groups, start=1):
+                self.log(f"[SIM] ({idx}/{len(groups)}) Aș posta în: {g}")
+                time.sleep(2)
+                self.log(f"[SIM] Aș aștepta {delay} secunde înainte de următorul grup.")
+                time.sleep(1)
+            self.log("[SIM] Rulare simulată terminată.")
+            return
+
+        # Mod real – folosim Selenium
+        self.log("=== PORNESC SELENIUM PENTRU POSTARE REALĂ ===")
+        self._build_driver()
+
+        try:
+            for idx, g in enumerate(groups, start=1):
+                self.log(f"[REAL] ({idx}/{len(groups)}) Postez în: {g}")
+                self._post_to_group(g, text, images)
+                if idx < len(groups):
+                    self.log(f"[REAL] Aștept {delay} secunde înainte de următorul grup.")
+                    time.sleep(delay)
+            self.log("[REAL] Rulare completă.")
+        finally:
+            if self.driver:
+                self.driver.quit()
+                self.driver = None
+
+
+# ------------------ Tkinter UI ------------------
+
+
+class FacepostApp:
+    def __init__(self, root: tk.Tk):
+        self.root = root
+        self.root.title("Facepost")
+        self.root.geometry("800x600")
+
+        self.config = load_config()
+
+        self.login_frame: Optional[tk.Frame] = None
+        self.main_frame: Optional[tk.Frame] = None
+
+        self.log_text: Optional[tk.Text] = None
+
+        self.show_login()
+
+    # -------- helper log (thread-safe) --------
+    def ui_log(self, msg: str):
+        if not self.log_text:
+            return
+        def _append():
+            self.log_text.insert(tk.END, msg + "\n")
+            self.log_text.see(tk.END)
+        self.root.after(0, _append)
+
+    # -------- LOGIN --------
+    def show_login(self):
+        if self.main_frame:
+            self.main_frame.destroy()
+            self.main_frame = None
+
+        self.login_frame = tk.Frame(self.root, padx=20, pady=20)
+        self.login_frame.pack(fill=tk.BOTH, expand=True)
+
+        lbl = tk.Label(self.login_frame, text="Autentificare Facepost", font=("Segoe UI", 16, "bold"))
+        lbl.pack(pady=(0, 20))
+
+        frm = tk.Frame(self.login_frame)
+        frm.pack(pady=10)
+
+        tk.Label(frm, text="Email:").grid(row=0, column=0, sticky="e", padx=5, pady=5)
+        self.email_var = tk.StringVar(value=self.config.email)
+        tk.Entry(frm, textvariable=self.email_var, width=40).grid(row=0, column=1, padx=5, pady=5)
+
+        btn = ttk.Button(self.login_frame, text="Verifică licența", command=self.on_login)
+        btn.pack(pady=10)
+
+    def on_login(self):
+        email = self.email_var.get().strip()
+        try:
+            data = check_license(email, self.config.device_id)
+        except LicenseError as e:
+            messagebox.showerror("Licență", str(e), parent=self.root)
+            return
+
+        # ok
+        self.config.email = email
+        save_config(self.config)
+        messagebox.showinfo("Licență", "Licență validă. Bine ai venit în Facepost!", parent=self.root)
+        self.show_main()
+
+    # -------- MAIN UI --------
+    def show_main(self):
+        if self.login_frame:
+            self.login_frame.destroy()
+            self.login_frame = None
+
+        self.main_frame = tk.Frame(self.root, padx=10, pady=10)
+        self.main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # panou sus: group URLs + imagini
+        top = tk.Frame(self.main_frame)
+        top.pack(fill=tk.BOTH, expand=True)
+
+        # stânga: grupuri
+        left = tk.Frame(top)
+        left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
+
+        tk.Label(left, text="Group URLs (unul pe linie):").pack(anchor="w")
+        self.groups_text = tk.Text(left, height=8)
+        self.groups_text.pack(fill=tk.BOTH, expand=True)
+
+        if self.config.groups:
+            self.groups_text.insert(tk.END, "\n".join(self.config.groups))
+
+        # dreapta: folder imagini + delay + simulare
+        right = tk.Frame(top)
+        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=False, padx=(5, 0))
+
+        tk.Label(right, text="Images folder:").grid(row=0, column=0, sticky="w", padx=5, pady=5)
+        self.images_var = tk.StringVar(value=self.config.images_folder)
+        tk.Entry(right, textvariable=self.images_var, width=35).grid(row=1, column=0, padx=5, pady=(0, 5))
+        ttk.Button(right, text="Browse", command=self.on_browse_images).grid(
+            row=1, column=1, padx=5, pady=(0, 5)
+        )
+
+        tk.Label(right, text="Delay (sec):").grid(row=2, column=0, sticky="w", padx=5, pady=(10, 0))
+        self.delay_var = tk.StringVar(value=str(self.config.delay_seconds))
+        tk.Entry(right, textvariable=self.delay_var, width=10).grid(row=3, column=0, padx=5, pady=5, sticky="w")
+
+        self.sim_var = tk.BooleanVar(value=self.config.simulate_only)
+        tk.Checkbutton(
+            right,
+            text="Simulare doar (nu postează)",
+            variable=self.sim_var,
+        ).grid(row=4, column=0, columnspan=2, sticky="w", padx=5, pady=(10, 0))
+
+        ttk.Button(right, text="Setări", command=self.show_settings_dialog).grid(
+            row=5, column=0, columnspan=2, padx=5, pady=(20, 0), sticky="we"
+        )
+
+        # text postare
+        tk.Label(self.main_frame, text="Post text:").pack(anchor="w")
+        self.post_text = tk.Text(self.main_frame, height=8)
+        self.post_text.pack(fill=tk.BOTH, expand=False)
+        if self.config.post_text:
+            self.post_text.insert(tk.END, self.config.post_text)
+
+        # butoane jos
+        btns = tk.Frame(self.main_frame)
+        btns.pack(fill=tk.X, pady=10)
+
+        ttk.Button(btns, text="Preview", command=self.on_preview).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btns, text="Save", command=self.on_save).pack(side=tk.LEFT, padx=5)
+        self.run_btn = ttk.Button(btns, text="Run", command=self.on_run)
+        self.run_btn.pack(side=tk.LEFT, padx=5)
+
+        ttk.Button(btns, text="Logout", command=self.on_logout).pack(side=tk.RIGHT, padx=5)
+
+        # log text
+        tk.Label(self.main_frame, text="Log:").pack(anchor="w")
+        self.log_text = tk.Text(self.main_frame, height=10, state="normal")
+        self.log_text.pack(fill=tk.BOTH, expand=True)
+
+    # -------- handlers --------
+
+    def on_browse_images(self):
+        folder = filedialog.askdirectory(title="Alege folderul cu imagini", parent=self.root)
+        if folder:
+            self.images_var.set(folder)
+
+    def on_preview(self):
+        # doar arătăm un rezumat simplu
+        groups = self._get_groups_from_ui()
+        text = self.post_text.get("1.0", tk.END).strip()
+        folder = self.images_var.get().strip()
+        delay = self.delay_var.get().strip()
+
+        msg = (
+            f"Grupuri: {len(groups)}\n"
+            f"Folder imagini: {folder or '-'}\n"
+            f"Delay: {delay} sec\n"
+            f"Simulare: {'DA' if self.sim_var.get() else 'NU'}\n\n"
+            f"Text postare:\n{text[:500]}{'...' if len(text) > 500 else ''}"
+        )
+        messagebox.showinfo("Preview", msg, parent=self.root)
+
+    def _get_groups_from_ui(self) -> List[str]:
+        raw = self.groups_text.get("1.0", tk.END)
+        groups = [g.strip() for g in raw.splitlines() if g.strip()]
+        return groups
+
+    def on_save(self):
+        try:
+            delay = int(self.delay_var.get().strip() or "0")
+        except ValueError:
+            messagebox.showerror("Eroare", "Delay trebuie să fie un număr.", parent=self.root)
+            return
+
+        self.config.groups = self._get_groups_from_ui()
+        self.config.images_folder = self.images_var.get().strip()
+        self.config.post_text = self.post_text.get("1.0", tk.END).strip()
+        self.config.delay_seconds = delay
+        self.config.simulate_only = self.sim_var.get()
+
+        save_config(self.config)
+        messagebox.showinfo("Salvat", "Configurația a fost salvată.", parent=self.root)
+
+    def on_run(self):
+        self.on_save()  # ne asigurăm că avem config update
+
+        self.run_btn.config(state="disabled")
+        self.ui_log("=== Pornesc rularea Facepost ===")
+
+        def worker():
             try:
-                ud = vals["-UD-"].strip()
-                dly = int(vals["-DELAY-"].strip())
-                new_cfg.update({
-                    "chrome_user_data_dir": ud,
-                    "images_folder": vals["-IMGS-"].strip(),
-                    "delay_sec": max(0, dly),
-                    "simulate": bool(vals["-SIM-"]),
-                    "email": vals["-EMAIL-"].strip(),
-                    "license_key": vals["-LIC-"].strip(),
-                })
-                if not new_cfg["chrome_user_data_dir"]:
-                    sg.popup_error("Setează Chrome user-data-dir (profilul unde ești logat în Facebook).")
-                    continue
-                save_config(new_cfg)
-                sg.popup_ok("Setări salvate.")
-                break
+                poster = Poster(self.config, log_callback=self.ui_log)
+                poster.run()
+                self.ui_log("=== Rulare terminată ===")
+                messagebox.showinfo("Facepost", "Rulare terminată.", parent=self.root)
             except Exception as e:
-                sg.popup_error(f"Eroare la salvare: {e}")
+                self.ui_log(f"[ERROR] {e}")
+                messagebox.showerror("Eroare", str(e), parent=self.root)
+            finally:
+                self.root.after(0, lambda: self.run_btn.config(state="normal"))
 
-    win.close()
-    return new_cfg
+        threading.Thread(target=worker, daemon=True).start()
 
-# ---------------------------
-#   MAIN UI
-# ---------------------------
+    def on_logout(self):
+        if messagebox.askyesno("Logout", "Sigur vrei să te deloghezi?", parent=self.root):
+            self.config.email = ""
+            save_config(self.config)
+            self.show_login()
+
+    # -------- SETTINGS DIALOG --------
+    def show_settings_dialog(self):
+        win = tk.Toplevel(self.root)
+        win.title("Setări Facepost")
+        win.grab_set()
+        win.resizable(False, False)
+
+        frm = tk.Frame(win, padx=10, pady=10)
+        frm.pack(fill=tk.BOTH, expand=True)
+
+        tk.Label(frm, text="Chrome profile dir (opțional):").grid(row=0, column=0, sticky="w", padx=5, pady=5)
+        chrome_var = tk.StringVar(value=self.config.chrome_profile_dir)
+        tk.Entry(frm, textvariable=chrome_var, width=40).grid(row=1, column=0, padx=5, pady=(0, 5))
+        ttk.Button(frm, text="Browse", command=lambda: self._browse_profile(chrome_var, win)).grid(
+            row=1, column=1, padx=5, pady=(0, 5)
+        )
+
+        def on_ok():
+            self.config.chrome_profile_dir = chrome_var.get().strip()
+            save_config(self.config)
+            win.destroy()
+
+        ttk.Button(frm, text="OK", command=on_ok).grid(row=2, column=0, columnspan=2, pady=10)
+
+    def _browse_profile(self, var: tk.StringVar, parent):
+        folder = filedialog.askdirectory(title="Alege folderul pentru profilul Chrome", parent=parent)
+        if folder:
+            var.set(folder)
+
+
+# ------------------ entrypoint ------------------
+
+
 def main():
-    cfg = load_config()
-    cfg = ensure_first_run_wizard(cfg)  # deschide wizard dacă e prima dată / lipsesc setări de bază
+    root = tk.Tk()
+    app = FacepostApp(root)
+    root.mainloop()
 
-    sg.theme("SystemDefault")
-    menu = [["Ajutor", ["Open AppData", "Despre"]]]
-
-    layout = [
-        [sg.Menu(menu)],
-        [sg.Text("Group URLs (unul pe linie)")],
-        [sg.Multiline("", key="-GROUPS-", size=(80,8), expand_x=True, expand_y=True)],
-        [sg.Text("Images folder"), sg.Input(cfg["images_folder"], key="-IMGS-", expand_x=True),
-         sg.FolderBrowse("Browse")],
-        [sg.Text("Post text")],
-        [sg.Multiline("", key="-TEXT-", size=(80,8), expand_x=True, expand_y=True)],
-        [sg.Text("Delay (sec)"), sg.Input(str(cfg["delay_sec"]), key="-DELAY-", size=(8,1)),
-         sg.Push(),
-         sg.Button("Preview", key="-PREVIEW-"),
-         sg.Button("Save", key="-SAVE-"),
-         sg.Button("Run", key="-RUN-", button_color=("white", "#00B894")),
-         sg.Button("⚙️ Settings", key="-SET-")]
-    ]
-
-    win = sg.Window(APP_NAME, layout, finalize=True, resizable=True)
-
-    while True:
-        ev, vals = win.read()
-        if ev == sg.WIN_CLOSED:
-            break
-
-        if ev == "Open AppData":
-            os.startfile(str(appdata_dir())) if sys.platform.startswith("win") else os.system(f'open "{appdata_dir()}"')
-        if ev == "Despre":
-            sg.popup_ok(f"{APP_NAME}\nConfig salvat în:\n{config_path()}")
-
-        if ev == "-SET-":
-            cfg = show_settings_dialog(cfg)
-            # reflectăm câteva setări în UI
-            win["-IMGS-"].update(cfg.get("images_folder", ""))
-            win["-DELAY-"].update(str(cfg.get("delay_sec", 120)))
-
-        if ev == "-SAVE-":
-            # salvăm doar elemente din fereastra principală (grupuri/text/delay/folder)
-            try:
-                dly = int(vals["-DELAY-"])
-            except:
-                dly = cfg["delay_sec"]
-            cfg.update({
-                "images_folder": vals["-IMGS-"].strip(),
-                "delay_sec": max(0, dly),
-            })
-            save_config(cfg)
-            sg.popup_ok("Date salvate în config.")
-
-        if ev == "-PREVIEW-":
-            groups = [g.strip() for g in vals["-GROUPS-"].splitlines() if g.strip()]
-            bad = [g for g in groups if not is_valid_fb_group_url(g)]
-            if bad:
-                sg.popup_error("Următoarele URL-uri nu par a fi linkuri valide de grup Facebook:\n\n" + "\n".join(bad))
-                continue
-            text = vals["-TEXT-"].strip() or "(fără text)"
-            sg.popup_ok(f"PREVIEW:\n\nGrupuri: {len(groups)}\nDelay: {cfg['delay_sec']}s\nSimulare: {cfg['simulate']}\n\nText:\n{text}")
-
-        if ev == "-RUN-":
-            # 1) validări ușoare
-            groups = [g.strip() for g in vals["-GROUPS-"].splitlines() if g.strip()]
-            if not groups:
-                sg.popup_error("Adaugă cel puțin un URL de grup.")
-                continue
-            bad = [g for g in groups if not is_valid_fb_group_url(g)]
-            if bad:
-                sg.popup_error("Următoarele URL-uri nu par a fi linkuri valide de grup Facebook:\n\n" + "\n".join(bad))
-                continue
-            # 2) salvăm ultimele alegeri în config
-            try:
-                dly = int(vals["-DELAY-"])
-            except:
-                dly = cfg["delay_sec"]
-            cfg.update({
-                "images_folder": vals["-IMGS-"].strip(),
-                "delay_sec": max(0, dly),
-            })
-            save_config(cfg)
-
-            # 3) rulăm jobul – aici pui logica reală de Selenium;
-            #    pentru demo, doar simulăm / apelăm modul live în funcție de cfg["simulate"]
-            if cfg["simulate"]:
-                # simulare pură
-                for idx, g in enumerate(groups, start=1):
-                    sg.one_line_progress_meter("Simulare postare", idx, len(groups),
-                                               f"Postez (simulat) în {g}", orientation="h")
-                    time.sleep(0.2)
-                sg.popup_ok("Postare simulată terminată.")
-            else:
-                # aici chemi funcția ta de postare reală (Selenium):
-                # run_posting(groups, vals["-TEXT-"], cfg["images_folder"], cfg)
-                sg.popup_ok("(LIVE) Am pornit job-ul de postare. Vezi logul/Chrome.")
-
-    win.close()
 
 if __name__ == "__main__":
     main()
-
