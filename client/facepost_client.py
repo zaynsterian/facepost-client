@@ -6,6 +6,7 @@ import tkinter as tk
 from tkinter import messagebox, filedialog
 from pathlib import Path
 import webbrowser
+from datetime import datetime
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -82,7 +83,7 @@ def create_driver(headless: bool = False) -> webdriver.Chrome:
     return driver
 
 
-# ================== CONFIG LOCAL (EMAIL ETC.) ==================
+# ================== CONFIG LOCAL (EMAIL, SCHEDULER) ==================
 
 CONFIG_FILE = get_app_dir() / "config.json"
 
@@ -110,7 +111,6 @@ def api_post(path: str, payload: dict) -> dict | None:
         if r.status_code == 200:
             return r.json()
         else:
-            # dacă serverul întoarce json cu eroare, îl returnăm și pe acela
             try:
                 return r.json()
             except:
@@ -241,12 +241,15 @@ def configure_facebook_login(root: tk.Tk | None = None):
 
 # ================== LOGICĂ POSTARE (SCHELET) ==================
 
-def run_posting(post_text: str, groups: list[str]):
+def run_posting(post_text: str, groups: list[str], images: list[str] | None = None):
     """
     Aici folosești driver-ul cu profilul Facepost ca să postezi în grupuri.
     `post_text` = textul introdus de user
     `groups` = lista de URL-uri de grupuri Facebook
+    `images` = lista de căi de fișiere imagini (dacă userul a selectat)
     """
+    images = images or []
+
     try:
         driver = create_driver(headless=False)
     except Exception as e:
@@ -258,17 +261,23 @@ def run_posting(post_text: str, groups: list[str]):
             messagebox.showwarning("Info", "Nu ai definit niciun URL de grup.")
             return
 
+        print("[DEBUG] Text de postat:")
+        print(post_text)
+        print("[DEBUG] Imagini selectate:")
+        for img in images:
+            print("  -", img)
+
         for url in groups:
             driver.get(url)
-            # TODO: Aici pui codul tău de postare efectivă:
-            #   - găsești textarea de postare
-            #   - introduci `post_text`
-            #   - dacă ai și poze, le atasezi
+            # TODO: Aici pui logica efectivă de postare:
+            #   - găsești zona de „Creează postare”
+            #   - inserezi `post_text`
+            #   - atașezi imaginile din `images`
             #   - apeși Publish
-            print(f"[DEBUG] Postez în grup: {url}")
+            print(f"[DEBUG] (simulare) postez în grup: {url}")
             # time.sleep(X) etc.
 
-        messagebox.showinfo("Succes", "Postările au fost trimise (sau procesate)!")
+        messagebox.showinfo("Succes", "Postările au fost procesate (vezi console log pentru debug).")
     finally:
         try:
             driver.quit()
@@ -282,10 +291,14 @@ class FacepostApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         root.title(APP_NAME)
-        root.geometry("680x560")
+        root.geometry("720x650")
 
         self.config = load_config()
         self.device_id = get_device_fingerprint()
+
+        # pentru scheduler
+        self.last_run_date = None  # ca să nu ruleze de mai multe ori în aceeași zi
+        self.image_paths: list[str] = []  # imagini selectate pentru postare
 
         # === Secțiune licență ===
         frame_lic = tk.LabelFrame(root, text=" Licență ", padx=10, pady=10)
@@ -296,7 +309,7 @@ class FacepostApp:
         tk.Entry(frame_lic, textvariable=self.email_var, width=40).grid(row=0, column=1, sticky="w")
 
         self.lic_status_label = tk.Label(frame_lic, text="Status: necunoscut", fg="gray")
-        self.lic_status_label.grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        self.lic_status_label.grid(row=1, column=0, columnspan=4, sticky="w", pady=(6, 0))
 
         btn_check = tk.Button(frame_lic, text="Verifică licența", command=self.on_check_license)
         btn_check.grid(row=0, column=2, padx=10)
@@ -316,6 +329,16 @@ class FacepostApp:
         )
         btn_fb.grid(row=0, column=1, padx=10, pady=5, sticky="w")
 
+        # === Secțiune imagini ===
+        frame_img = tk.LabelFrame(root, text=" Imagini pentru postare ", padx=10, pady=10)
+        frame_img.pack(fill="x", padx=10, pady=5)
+
+        btn_sel_img = tk.Button(frame_img, text="Alege imagini...", command=self.on_select_images)
+        btn_sel_img.grid(row=0, column=0, sticky="w")
+
+        self.images_label = tk.Label(frame_img, text="0 imagini selectate", fg="gray")
+        self.images_label.grid(row=0, column=1, sticky="w", padx=10)
+
         # === Secțiune conținut postare ===
         frame_post = tk.LabelFrame(root, text=" Conținut postare ", padx=10, pady=10)
         frame_post.pack(fill="both", expand=True, padx=10, pady=10)
@@ -328,6 +351,26 @@ class FacepostApp:
         self.groups_text = tk.Text(frame_post, height=6)
         self.groups_text.pack(fill="both", expand=True, pady=5)
 
+        # === Secțiune scheduler ===
+        frame_sched = tk.LabelFrame(root, text=" Programare zilnică ", padx=10, pady=10)
+        frame_sched.pack(fill="x", padx=10, pady=5)
+
+        tk.Label(frame_sched, text="Ora zilnică (HH:MM):").grid(row=0, column=0, sticky="w")
+        self.schedule_time_var = tk.StringVar(value=self.config.get("schedule_time", "09:00"))
+        tk.Entry(frame_sched, textvariable=self.schedule_time_var, width=8).grid(row=0, column=1, sticky="w", padx=(5, 15))
+
+        self.schedule_enabled_var = tk.BooleanVar(value=bool(self.config.get("schedule_enabled", False)))
+        chk = tk.Checkbutton(frame_sched, text="Activează programarea zilnică", variable=self.schedule_enabled_var,
+                             command=self.on_scheduler_changed)
+        chk.grid(row=0, column=2, sticky="w")
+
+        tk.Label(
+            frame_sched,
+            text="Programarea funcționează doar cât timp aplicația este deschisă.\n"
+                 "La ora setată, Facepost va încerca să posteze cu textul, grupurile și imaginile de mai sus.",
+            fg="gray", justify="left"
+        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
+
         # === Butoane jos ===
         frame_bottom = tk.Frame(root)
         frame_bottom.pack(fill="x", padx=10, pady=10)
@@ -338,10 +381,31 @@ class FacepostApp:
         btn_run = tk.Button(frame_bottom, text="Pornește postarea acum", command=self.on_run_posting)
         btn_run.pack(side="right")
 
-        # opțional: verificare silent de update la 3 secunde după pornire
-        root.after(3000, lambda: None)  # aici poți pune check_for_updates_dialog(self.root) dacă vrei popup automat
+        # pornește loop-ul schedulerului
+        root.after(5000, self.scheduler_tick)
+
+    # ------- Helpers config -------
+
+    def save_config_fields(self):
+        self.config["email"] = self.email_var.get().strip().lower()
+        self.config["schedule_time"] = self.schedule_time_var.get().strip()
+        self.config["schedule_enabled"] = bool(self.schedule_enabled_var.get())
+        save_config(self.config)
 
     # ------- Callbacks UI -------
+
+    def on_select_images(self):
+        files = filedialog.askopenfilenames(
+            title="Selectează imagini",
+            filetypes=[
+                ("Imagini", "*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.gif"),
+                ("Toate fișierele", "*.*"),
+            ]
+        )
+        if not files:
+            return
+        self.image_paths = list(files)
+        self.images_label.config(text=f"{len(self.image_paths)} imagini selectate", fg="black")
 
     def on_check_license(self):
         email = self.email_var.get().strip().lower()
@@ -350,13 +414,11 @@ class FacepostApp:
             return
 
         # salvăm în config
-        self.config["email"] = email
-        save_config(self.config)
+        self.save_config_fields()
 
         # întâi bind (în caz că nu e legat), apoi check
         bind_res = bind_license(email, self.device_id)
         if bind_res.get("error"):
-            # e posibil să fie "device limit reached" etc.
             self.lic_status_label.config(
                 text=f"Status licență: eroare bind ({bind_res['error']})", fg="red"
             )
@@ -389,17 +451,17 @@ class FacepostApp:
             )
 
     def on_preview_posting(self):
-        """Arată un mic preview (text + grupuri) într-o fereastră separată."""
+        """Arată un mic preview (text + grupuri + imagini) într-o fereastră separată."""
         text = self.post_text.get("1.0", "end").strip()
         groups_raw = self.groups_text.get("1.0", "end").strip()
 
-        if not text and not groups_raw:
+        if not text and not groups_raw and not self.image_paths:
             messagebox.showinfo("Preview", "Nu ai completat nimic pentru preview.")
             return
 
         win = tk.Toplevel(self.root)
         win.title("Preview postare")
-        win.geometry("600x450")
+        win.geometry("650x500")
 
         lbl1 = tk.Label(win, text="Text postare:", font=("Segoe UI", 10, "bold"))
         lbl1.pack(anchor="w", padx=10, pady=(10, 0))
@@ -412,38 +474,87 @@ class FacepostApp:
         lbl2 = tk.Label(win, text="URL-uri grupuri:", font=("Segoe UI", 10, "bold"))
         lbl2.pack(anchor="w", padx=10, pady=(10, 0))
 
-        txt2 = tk.Text(win, height=10)
-        txt2.pack(fill="both", expand=True, padx=10, pady=5)
+        txt2 = tk.Text(win, height=8)
+        txt2.pack(fill="x", padx=10, pady=5)
         txt2.insert("1.0", groups_raw)
         txt2.config(state="disabled")
 
-    def on_run_posting(self):
+        lbl3 = tk.Label(win, text="Imagini selectate:", font=("Segoe UI", 10, "bold"))
+        lbl3.pack(anchor="w", padx=10, pady=(10, 0))
+
+        txt3 = tk.Text(win, height=6)
+        txt3.pack(fill="both", expand=True, padx=10, pady=5)
+        if self.image_paths:
+            for p in self.image_paths:
+                txt3.insert("end", p + "\n")
+        else:
+            txt3.insert("1.0", "(nici o imagine selectată)")
+        txt3.config(state="disabled")
+
+    def on_run_posting(self, from_scheduler: bool = False):
         email = self.email_var.get().strip().lower()
         if not email:
-            messagebox.showwarning("Atenție", "Te rog introdu emailul și verifică licența înainte.")
+            if not from_scheduler:
+                messagebox.showwarning("Atenție", "Te rog introdu emailul și verifică licența înainte.")
             return
 
-        # poți forța un check licență înainte de postare, dacă vrei:
+        # verificare licență înainte de postare
         check_res = check_license(email, self.device_id)
         if check_res.get("status") not in ("ok",):
-            messagebox.showerror(
-                "Licență invalidă",
-                "Licența nu este activă. Te rog verifică licența înainte de postare."
-            )
+            if not from_scheduler:
+                messagebox.showerror(
+                    "Licență invalidă",
+                    "Licența nu este activă. Te rog verifică licența înainte de postare."
+                )
             return
 
         text = self.post_text.get("1.0", "end").strip()
         if not text:
-            messagebox.showwarning("Atenție", "Te rog introdu textul postării.")
+            if not from_scheduler:
+                messagebox.showwarning("Atenție", "Te rog introdu textul postării.")
             return
 
         groups_raw = self.groups_text.get("1.0", "end").strip()
         groups = [line.strip() for line in groups_raw.splitlines() if line.strip()]
         if not groups:
-            messagebox.showwarning("Atenție", "Te rog introdu cel puțin un URL de grup.")
+            if not from_scheduler:
+                messagebox.showwarning("Atenție", "Te rog introdu cel puțin un URL de grup.")
             return
 
-        run_posting(text, groups)
+        # rulăm postarea (cu imagini)
+        run_posting(text, groups, self.image_paths)
+
+    def on_scheduler_changed(self):
+        self.save_config_fields()
+
+    # ------- Scheduler loop -------
+
+    def scheduler_tick(self):
+        """
+        Se apelează periodic (la ~60s). Dacă programarea este activă și
+        ora curentă = ora setată și nu am mai postat azi, lansează on_run_posting(from_scheduler=True).
+        """
+        try:
+            if self.schedule_enabled_var.get():
+                schedule_time = (self.schedule_time_var.get() or "").strip()
+                try:
+                    hh_str, mm_str = schedule_time.split(":")
+                    hh = int(hh_str)
+                    mm = int(mm_str)
+                    now = datetime.now()
+                    target_today = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+                except Exception:
+                    # oră invalidă, nu facem nimic
+                    pass
+                else:
+                    today = datetime.now().date()
+                    # dacă e după ora setată și nu am rulat încă azi
+                    if now >= target_today and self.last_run_date != today:
+                        self.last_run_date = today
+                        self.on_run_posting(from_scheduler=True)
+        finally:
+            # replanificăm verificarea peste 60 de secunde
+            self.root.after(60_000, self.scheduler_tick)
 
 
 # ================== ENTRY POINT ==================
