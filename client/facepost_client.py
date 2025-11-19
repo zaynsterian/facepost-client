@@ -5,15 +5,16 @@ import requests
 import tkinter as tk
 from tkinter import messagebox, filedialog
 from pathlib import Path
+import webbrowser
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 
-
 # ================== CONFIG BAZĂ ==================
 
-API_URL = "https://facepost.onrender.com"  # URL-ul serverului tău de licențe
+API_URL = "https://facepost.onrender.com"  # URL-ul serverului de licențe
 APP_NAME = "Facepost"
+APP_VERSION = "1.0.0"  # versiunea clientului (o vei incrementa când updatezi EXE-ul)
 
 # folder intern Facepost (pt config + device_id + profil Chrome)
 def get_app_dir() -> Path:
@@ -128,6 +129,53 @@ def check_license(email: str, fingerprint: str) -> dict:
     return api_post("/check", {"email": email, "fingerprint": fingerprint}) or {}
 
 
+# ================== UPDATE CHECK ==================
+
+def check_for_updates_dialog(root: tk.Tk):
+    """
+    Verifică /updates/client.json pe server.
+    Format așteptat:
+    {
+      "version": "1.0.1",
+      "url": "https://.../FacepostSetup.exe",
+      "notes": "Ce s-a schimbat..."
+    }
+    """
+    url = f"{API_URL.rstrip('/')}/updates/client.json"
+    try:
+        r = requests.get(url, timeout=10)
+        if r.status_code != 200:
+            messagebox.showinfo("Update", "Nu s-a putut verifica versiunea de pe server.")
+            return
+        data = r.json()
+    except Exception as e:
+        messagebox.showinfo("Update", f"Nu s-a putut verifica update-ul:\n{e}")
+        return
+
+    server_ver = str(data.get("version", "")).strip()
+    download_url = data.get("url") or data.get("download_url") or ""
+    notes = data.get("notes", "")
+
+    if not server_ver:
+        messagebox.showinfo("Update", "Răspuns invalid de la server (fără versiune).")
+        return
+
+    if server_ver == APP_VERSION:
+        messagebox.showinfo("Update", f"Ai deja ultima versiune ({APP_VERSION}).")
+        return
+
+    msg = f"A apărut o versiune nouă: {server_ver}\nVersiunea ta: {APP_VERSION}"
+    if notes:
+        msg += f"\n\nNoutăți:\n{notes}"
+
+    if download_url:
+        msg += "\n\nVrei să deschizi pagina de download?"
+        if messagebox.askyesno("Update disponibil", msg):
+            webbrowser.open(download_url)
+    else:
+        messagebox.showinfo("Update disponibil", msg)
+
+
 # ================== TKINTER: CONFIG FACEBOOK LOGIN ==================
 
 def configure_facebook_login(root: tk.Tk | None = None):
@@ -206,32 +254,26 @@ def run_posting(post_text: str, groups: list[str]):
         return
 
     try:
-        # TODO: AICI PUI CODUL TĂU DE POSTARE EXISTENT
-        # Exemplu generic:
-        #
-        # for url in groups:
-        #     driver.get(url)
-        #     # aici localizezi textarea de postare, bagi `post_text`,
-        #     # atașezi poze (dacă ai), apeși Publish, apoi aștepți X secunde
-        #
-        # IMPORTANT: pentru orice excepție, loghează în consolă sau afișează messagebox.
-
         if not groups:
             messagebox.showwarning("Info", "Nu ai definit niciun URL de grup.")
             return
 
         for url in groups:
-            # exemplu simplu:
             driver.get(url)
-            # aici trebuie personalizat pe structura actuală a UI-ului Facebook
-            # (nu scriu selectors ca să nu stric ce ai deja implementat)
+            # TODO: Aici pui codul tău de postare efectivă:
+            #   - găsești textarea de postare
+            #   - introduci `post_text`
+            #   - dacă ai și poze, le atasezi
+            #   - apeși Publish
             print(f"[DEBUG] Postez în grup: {url}")
-            # time.sleep(5)
-            # ... codul tău de interacțiune ...
+            # time.sleep(X) etc.
 
         messagebox.showinfo("Succes", "Postările au fost trimise (sau procesate)!")
     finally:
-        driver.quit()
+        try:
+            driver.quit()
+        except:
+            pass
 
 
 # ================== UI PRINCIPAL TKINTER ==================
@@ -240,7 +282,7 @@ class FacepostApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         root.title(APP_NAME)
-        root.geometry("640x520")
+        root.geometry("680x560")
 
         self.config = load_config()
         self.device_id = get_device_fingerprint()
@@ -254,10 +296,13 @@ class FacepostApp:
         tk.Entry(frame_lic, textvariable=self.email_var, width=40).grid(row=0, column=1, sticky="w")
 
         self.lic_status_label = tk.Label(frame_lic, text="Status: necunoscut", fg="gray")
-        self.lic_status_label.grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        self.lic_status_label.grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
         btn_check = tk.Button(frame_lic, text="Verifică licența", command=self.on_check_license)
         btn_check.grid(row=0, column=2, padx=10)
+
+        btn_update = tk.Button(frame_lic, text="Verifică update", command=lambda: check_for_updates_dialog(self.root))
+        btn_update.grid(row=0, column=3, padx=5)
 
         # === Secțiune Facebook login ===
         frame_fb = tk.LabelFrame(root, text=" Facebook ", padx=10, pady=10)
@@ -283,12 +328,18 @@ class FacepostApp:
         self.groups_text = tk.Text(frame_post, height=6)
         self.groups_text.pack(fill="both", expand=True, pady=5)
 
-        # === Buton start ===
+        # === Butoane jos ===
         frame_bottom = tk.Frame(root)
         frame_bottom.pack(fill="x", padx=10, pady=10)
 
+        btn_preview = tk.Button(frame_bottom, text="Preview postare", command=self.on_preview_posting)
+        btn_preview.pack(side="left")
+
         btn_run = tk.Button(frame_bottom, text="Pornește postarea acum", command=self.on_run_posting)
         btn_run.pack(side="right")
+
+        # opțional: verificare silent de update la 3 secunde după pornire
+        root.after(3000, lambda: None)  # aici poți pune check_for_updates_dialog(self.root) dacă vrei popup automat
 
     # ------- Callbacks UI -------
 
@@ -337,6 +388,35 @@ class FacepostApp:
                 text=f"Status licență: NECUNOSCUT ({status})", fg="orange"
             )
 
+    def on_preview_posting(self):
+        """Arată un mic preview (text + grupuri) într-o fereastră separată."""
+        text = self.post_text.get("1.0", "end").strip()
+        groups_raw = self.groups_text.get("1.0", "end").strip()
+
+        if not text and not groups_raw:
+            messagebox.showinfo("Preview", "Nu ai completat nimic pentru preview.")
+            return
+
+        win = tk.Toplevel(self.root)
+        win.title("Preview postare")
+        win.geometry("600x450")
+
+        lbl1 = tk.Label(win, text="Text postare:", font=("Segoe UI", 10, "bold"))
+        lbl1.pack(anchor="w", padx=10, pady=(10, 0))
+
+        txt1 = tk.Text(win, height=8)
+        txt1.pack(fill="x", padx=10, pady=5)
+        txt1.insert("1.0", text)
+        txt1.config(state="disabled")
+
+        lbl2 = tk.Label(win, text="URL-uri grupuri:", font=("Segoe UI", 10, "bold"))
+        lbl2.pack(anchor="w", padx=10, pady=(10, 0))
+
+        txt2 = tk.Text(win, height=10)
+        txt2.pack(fill="both", expand=True, padx=10, pady=5)
+        txt2.insert("1.0", groups_raw)
+        txt2.config(state="disabled")
+
     def on_run_posting(self):
         email = self.email_var.get().strip().lower()
         if not email:
@@ -363,7 +443,6 @@ class FacepostApp:
             messagebox.showwarning("Atenție", "Te rog introdu cel puțin un URL de grup.")
             return
 
-        # aici chemăm logica de Selenium
         run_posting(text, groups)
 
 
