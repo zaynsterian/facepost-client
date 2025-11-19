@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import time
 import uuid
@@ -173,24 +174,55 @@ def do_post_in_group(driver: webdriver.Chrome,
                      simulate: bool = False) -> bool:
     """
     Postează într-un singur grup.
+    Flux:
+      1) merge la URL-ul grupului
+      2) apasă butonul „Scrie ceva...” / „What's on your mind...”
+      3) în dialogul de postare, scrie textul în editor
+      4) atașează imagini (dacă sunt)
+      5) dacă nu e simulare → apasă butonul Post/Publish
     Returnează True dacă pare că a reușit, False altfel.
     """
     print("[DEBUG] Navighez la grup:", group_url)
     driver.get(group_url)
     wait = WebDriverWait(driver, 30)
 
+    # 1) Click pe butonul de composer („Scrie ceva...”)
+    composer = None
+    composer_xpaths = [
+        # RO
+        "//div[@role='button']//span[contains(text(),'Scrie ceva')]",
+        "//div[@role='button']//span[contains(text(),'Scrie o postare')]",
+        # EN (în caz că ai cont în engleză)
+        "//div[@role='button']//span[contains(text(),\"What's on your mind\")]",
+        "//div[@role='button' and contains(.,\"What's on your mind\")]",
+    ]
+    for xp in composer_xpaths:
+        try:
+            composer = wait.until(
+                EC.element_to_be_clickable((By.XPATH, xp))
+            )
+            if composer:
+                print("[DEBUG] Am găsit composer prin XPATH:", xp)
+                composer.click()
+                break
+        except TimeoutException:
+            continue
+
+    if not composer:
+        print("[WARN] Nu am găsit butonul de composer (Scrie ceva...).")
+        return False
+
+    # 2) Editorul din dialogul de postare
     try:
-        # 1. editorul de text – de obicei un div[role="textbox"]
         editor = wait.until(
             EC.element_to_be_clickable(
-                (By.CSS_SELECTOR, 'div[role="textbox"]')
+                (By.XPATH, "//div[@role='dialog']//div[@role='textbox']")
             )
         )
     except TimeoutException:
-        print("[WARN] Nu am găsit editorul de text în acest grup.")
+        print("[WARN] Nu am găsit editorul principal din dialog.")
         return False
 
-    # clic și scriem textul
     editor.click()
     time.sleep(1)
     if text.strip():
@@ -198,47 +230,49 @@ def do_post_in_group(driver: webdriver.Chrome,
     else:
         print("[WARN] Nu ai text de postare – continui doar cu imagini.")
 
-    # 2. upload imagini (opțional)
+    # 3) Upload imagini (dacă există)
     if image_files:
         joined = "\n".join(image_files)
         print("[DEBUG] Atașez imagini:")
         for p in image_files:
             print("  -", p)
         try:
-            # input[file] pentru imagini – accept conține 'image'
             file_input = wait.until(
                 EC.presence_of_element_located(
-                    (By.CSS_SELECTOR, 'input[type="file"][accept*="image"]')
+                    (
+                        By.XPATH,
+                        "//div[@role='dialog']//input[@type='file' and contains(@accept,'image')]",
+                    )
                 )
             )
             file_input.send_keys(joined)
-            # așteptăm puțin să se încarce preview-urile
+            # lăsăm timp să se încarce preview-urile
             time.sleep(5)
         except TimeoutException:
-            print("[WARN] Nu am găsit input file pentru imagini – postez doar text.")
+            print("[WARN] Nu am găsit input-ul de fișiere pentru imagini – postez doar text.")
 
-    # 3. dacă e simulare, ne oprim aici (nu trimitem postarea)
+    # 4) Dacă e simulare, ne oprim aici (nu trimitem postarea)
     if simulate:
         print("[DEBUG] SIMULARE: nu apăs butonul Post/Publish.")
         return True
 
-    # 4. Căutăm butonul de „Postează” / „Post” / „Publish”
+    # 5) Butonul de Post/Publish în dialog
     try:
         post_btn = None
-        # XPATH-uri alternative – UI-ul Facebook se mai schimbă
-        xpaths = [
-            "//div[@aria-label='Postează']",
-            "//div[@aria-label='Post']",
-            "//div[@aria-label='Publish']",
-            "//span[text()='Postează']/ancestor::div[@role='button']",
-            "//span[text()='Post']/ancestor::div[@role='button']",
+        post_xpaths = [
+            "//div[@role='dialog']//div[@aria-label='Postează']",
+            "//div[@role='dialog']//div[@aria-label='Post']",
+            "//div[@role='dialog']//div[@aria-label='Publish']",
+            "//div[@role='dialog']//span[text()='Postează']/ancestor::div[@role='button']",
+            "//div[@role='dialog']//span[text()='Post']/ancestor::div[@role='button']",
         ]
-        for xp in xpaths:
+        for xp in post_xpaths:
             try:
                 post_btn = wait.until(
                     EC.element_to_be_clickable((By.XPATH, xp))
                 )
                 if post_btn:
+                    print("[DEBUG] Am găsit butonul Post prin XPATH:", xp)
                     break
             except TimeoutException:
                 continue
@@ -249,7 +283,6 @@ def do_post_in_group(driver: webdriver.Chrome,
 
         post_btn.click()
         print("[DEBUG] Am apăsat butonul Post.")
-        # un mic wait să se trimită
         time.sleep(5)
         return True
     except Exception as e:
@@ -593,5 +626,4 @@ def main():
 
 
 if __name__ == "__main__":
-    import sys
     main()
