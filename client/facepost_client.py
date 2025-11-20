@@ -39,8 +39,16 @@ DEFAULT_CONFIG = {
     "post_text": "",
     "image_files": [],
     "delay_seconds": 120,
+
+    # vechi (single scheduler) – le lăsăm pt compatibilitate, dar nu le mai folosim
     "schedule_enabled": False,
-    "schedule_time": "09:00",   # HH:MM
+    "schedule_time": "09:00",
+
+    # nou: două runde pe zi
+    "schedule_enabled_morning": False,
+    "schedule_time_morning": "08:00",   # HH:MM
+    "schedule_enabled_evening": False,
+    "schedule_time_evening": "19:00",
 }
 
 
@@ -53,7 +61,7 @@ def load_config() -> dict:
             data = {}
     else:
         data = {}
-    # completăm cu valorile default lipsă
+
     cfg = DEFAULT_CONFIG.copy()
     cfg.update(data)
 
@@ -61,11 +69,20 @@ def load_config() -> dict:
     if not cfg.get("device_id"):
         hw = f"{platform.node()}-{uuid.uuid4()}"
         cfg["device_id"] = hashlib.sha256(hw.encode("utf-8")).hexdigest()[:32]
+
     # profil Chrome dedicat
     if not cfg.get("chrome_profile_dir"):
         base = Path.home() / ".facepost_chrome_profile"
         base.mkdir(parents=True, exist_ok=True)
         cfg["chrome_profile_dir"] = str(base)
+
+    # mic fallback: dacă userul avea doar schedule_enabled vechi,
+    # îl mapăm pe dimineață ca să nu piardă setarea
+    if cfg.get("schedule_enabled") and not (
+        cfg.get("schedule_enabled_morning") or cfg.get("schedule_enabled_evening")
+    ):
+        cfg["schedule_enabled_morning"] = True
+        cfg["schedule_time_morning"] = cfg.get("schedule_time", "08:00")
 
     return cfg
 
@@ -118,7 +135,6 @@ def get_chromedriver_path() -> str:
     candidate = exe_dir / CHROMEDRIVER_NAME
     if candidate.exists():
         return str(candidate)
-    # fallback: în folderul de lucru
     candidate = Path.cwd() / CHROMEDRIVER_NAME
     return str(candidate)
 
@@ -173,34 +189,30 @@ def do_post_in_group(driver: webdriver.Chrome,
                      image_files: list[str],
                      simulate: bool = False) -> bool:
     """
-    Postează într-un singur grup.
-    Flux:
-      1) merge la URL-ul grupului
-      2) apasă butonul „Scrie ceva...” / „What's on your mind...”
-      3) în dialogul de postare, scrie textul în editor
-      4) atașează imagini (dacă sunt)
-      5) dacă nu e simulare → apasă butonul Post/Publish
-    Returnează True dacă pare că a reușit, False altfel.
+    Postează într-un singur grup:
+      1) merge la URL
+      2) apasă „Scrie ceva...” / „What's on your mind...”
+      3) scrie textul
+      4) atașează imagini
+      5) dacă nu e simulare → Postează
     """
     print("[DEBUG] Navighez la grup:", group_url)
     driver.get(group_url)
     wait = WebDriverWait(driver, 30)
 
-    # 1) Click pe butonul de composer („Scrie ceva...”)
+    # 1) butonul de composer
     composer = None
     composer_xpaths = [
         # RO
         "//div[@role='button']//span[contains(text(),'Scrie ceva')]",
         "//div[@role='button']//span[contains(text(),'Scrie o postare')]",
-        # EN (în caz că ai cont în engleză)
+        # EN
         "//div[@role='button']//span[contains(text(),\"What's on your mind\")]",
         "//div[@role='button' and contains(.,\"What's on your mind\")]",
     ]
     for xp in composer_xpaths:
         try:
-            composer = wait.until(
-                EC.element_to_be_clickable((By.XPATH, xp))
-            )
+            composer = wait.until(EC.element_to_be_clickable((By.XPATH, xp)))
             if composer:
                 print("[DEBUG] Am găsit composer prin XPATH:", xp)
                 composer.click()
@@ -212,7 +224,7 @@ def do_post_in_group(driver: webdriver.Chrome,
         print("[WARN] Nu am găsit butonul de composer (Scrie ceva...).")
         return False
 
-    # 2) Editorul din dialogul de postare
+    # 2) editorul din dialog
     try:
         editor = wait.until(
             EC.element_to_be_clickable(
@@ -230,7 +242,7 @@ def do_post_in_group(driver: webdriver.Chrome,
     else:
         print("[WARN] Nu ai text de postare – continui doar cu imagini.")
 
-    # 3) Upload imagini (dacă există)
+    # 3) upload imagini
     if image_files:
         joined = "\n".join(image_files)
         print("[DEBUG] Atașez imagini:")
@@ -246,17 +258,16 @@ def do_post_in_group(driver: webdriver.Chrome,
                 )
             )
             file_input.send_keys(joined)
-            # lăsăm timp să se încarce preview-urile
             time.sleep(5)
         except TimeoutException:
             print("[WARN] Nu am găsit input-ul de fișiere pentru imagini – postez doar text.")
 
-    # 4) Dacă e simulare, ne oprim aici (nu trimitem postarea)
+    # simulare?
     if simulate:
         print("[DEBUG] SIMULARE: nu apăs butonul Post/Publish.")
         return True
 
-    # 5) Butonul de Post/Publish în dialog
+    # 5) buton Post
     try:
         post_btn = None
         post_xpaths = [
@@ -268,9 +279,7 @@ def do_post_in_group(driver: webdriver.Chrome,
         ]
         for xp in post_xpaths:
             try:
-                post_btn = wait.until(
-                    EC.element_to_be_clickable((By.XPATH, xp))
-                )
+                post_btn = wait.until(EC.element_to_be_clickable((By.XPATH, xp)))
                 if post_btn:
                     print("[DEBUG] Am găsit butonul Post prin XPATH:", xp)
                     break
@@ -295,9 +304,7 @@ def run_posting(groups: list[str],
                 image_files: list[str],
                 delay_seconds: int,
                 simulate: bool = False) -> None:
-    """
-    Rulează secvența de postare pentru toate grupurile.
-    """
+    """Rulează secvența de postare pentru toate grupurile."""
     if not groups:
         print("[INFO] Niciun grup – nimic de făcut.")
         return
@@ -326,7 +333,7 @@ def run_posting(groups: list[str],
     finally:
         driver.quit()
         print("[INFO] Am închis browserul.")
-    
+
 
 # ================== UI TKINTER ==================
 
@@ -334,18 +341,31 @@ class FacepostApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title(APP_NAME)
-        self.root.geometry("780x620")
+        self.root.geometry("780x640")
 
         self.config = CONFIG
 
         # stare
         self.is_running = False
         self.images: list[str] = list(self.config.get("image_files", []))
-        self.schedule_enabled = tk.BooleanVar(value=self.config.get("schedule_enabled", False))
-        self.schedule_time_var = tk.StringVar(value=self.config.get("schedule_time", "09:00"))
         self.simulate_var = tk.BooleanVar(value=False)
 
-        self.next_run_dt: datetime | None = None
+        # programare: 2 runde
+        self.schedule_morning_enabled = tk.BooleanVar(
+            value=self.config.get("schedule_enabled_morning", False)
+        )
+        self.schedule_morning_time_var = tk.StringVar(
+            value=self.config.get("schedule_time_morning", "08:00")
+        )
+        self.schedule_evening_enabled = tk.BooleanVar(
+            value=self.config.get("schedule_enabled_evening", False)
+        )
+        self.schedule_evening_time_var = tk.StringVar(
+            value=self.config.get("schedule_time_evening", "19:00")
+        )
+
+        self.next_run_morning: datetime | None = None
+        self.next_run_evening: datetime | None = None
 
         self.build_ui()
         self.root.after(1000, self.schedule_tick)
@@ -408,21 +428,32 @@ class FacepostApp:
         ttk.Checkbutton(bottom1, text="Simulare (nu posta efectiv)",
                         variable=self.simulate_var).pack(side="left", padx=10)
 
-        # Scheduler
-        bottom2 = ttk.Frame(self.root)
-        bottom2.pack(fill="x", padx=10, pady=(5, 0))
+        # Scheduler – două runde
+        sched_frame = ttk.LabelFrame(self.root, text="Programare zilnică (max 2 runde)")
+        sched_frame.pack(fill="x", padx=10, pady=(5, 0))
 
-        ttk.Checkbutton(bottom2, text="Programare zilnică",
-                        variable=self.schedule_enabled).pack(side="left")
+        row_m = ttk.Frame(sched_frame)
+        row_m.pack(fill="x", pady=2)
+        ttk.Checkbutton(row_m, text="Rundă dimineața",
+                        variable=self.schedule_morning_enabled).pack(side="left")
+        ttk.Label(row_m, text="la ora (HH:MM):").pack(side="left", padx=(10, 2))
+        self.schedule_morning_entry = ttk.Entry(
+            row_m, textvariable=self.schedule_morning_time_var, width=6
+        )
+        self.schedule_morning_entry.pack(side="left")
 
-        ttk.Label(bottom2, text="la ora (HH:MM):").pack(side="left", padx=(10, 2))
-        self.schedule_time_entry = ttk.Entry(bottom2,
-                                             textvariable=self.schedule_time_var,
-                                             width=6)
-        self.schedule_time_entry.pack(side="left")
+        row_e = ttk.Frame(sched_frame)
+        row_e.pack(fill="x", pady=2)
+        ttk.Checkbutton(row_e, text="Rundă seara",
+                        variable=self.schedule_evening_enabled).pack(side="left")
+        ttk.Label(row_e, text="la ora (HH:MM):").pack(side="left", padx=(10, 2))
+        self.schedule_evening_entry = ttk.Entry(
+            row_e, textvariable=self.schedule_evening_time_var, width=6
+        )
+        self.schedule_evening_entry.pack(side="left")
 
-        self.next_run_label = ttk.Label(bottom2, text="")
-        self.next_run_label.pack(side="left", padx=10)
+        self.next_run_label = ttk.Label(sched_frame, text="Programare oprită")
+        self.next_run_label.pack(anchor="w", padx=4, pady=(4, 2))
 
         # Butoane jos
         btn_frame = ttk.Frame(self.root)
@@ -469,10 +500,19 @@ class FacepostApp:
         self.config["email"] = self.email_var.get().strip().lower()
         self.config["group_urls"] = self.group_text.get("1.0", "end").strip()
         self.config["post_text"] = self.post_text.get("1.0", "end").strip()
-        self.config["delay_seconds"] = int(self.delay_var.get() or "120")
+        try:
+            self.config["delay_seconds"] = int(self.delay_var.get() or "120")
+        except ValueError:
+            self.config["delay_seconds"] = 120
+
         self.config["image_files"] = self.images
-        self.config["schedule_enabled"] = bool(self.schedule_enabled.get())
-        self.config["schedule_time"] = self.schedule_time_var.get().strip() or "09:00"
+
+        # nou: salvăm cele două runde
+        self.config["schedule_enabled_morning"] = bool(self.schedule_morning_enabled.get())
+        self.config["schedule_time_morning"] = self.schedule_morning_time_var.get().strip() or "08:00"
+        self.config["schedule_enabled_evening"] = bool(self.schedule_evening_enabled.get())
+        self.config["schedule_time_evening"] = self.schedule_evening_time_var.get().strip() or "19:00"
+
         save_config(self.config)
         messagebox.showinfo(APP_NAME, "Config salvat.", parent=self.root)
 
@@ -504,46 +544,78 @@ class FacepostApp:
         self.status_var.set(f"Probleme licență: {err}")
         messagebox.showerror(APP_NAME, f"Probleme licență: {err}", parent=self.root)
 
-    # ---------- Programare zilnică ----------
+    # ---------- Programare zilnică (2 runde) ----------
 
-    def parse_schedule_time(self) -> dtime | None:
-        val = self.schedule_time_var.get().strip()
+    def parse_time_str(self, val: str) -> dtime | None:
+        val = (val or "").strip()
         try:
             h, m = map(int, val.split(":"))
             return dtime(hour=h, minute=m)
         except Exception:
             return None
 
-    def compute_next_run(self) -> datetime | None:
-        if not self.schedule_enabled.get():
+    def compute_next_for(self, time_str: str, enabled: bool) -> datetime | None:
+        if not enabled:
             return None
-        t = self.parse_schedule_time()
+        t = self.parse_time_str(time_str)
         if not t:
             return None
         now = datetime.now(UTC)
-        today_run = datetime.combine(now.date(), t, tzinfo=UTC)
-        if today_run <= now:
-            today_run += timedelta(days=1)
-        return today_run
+        cand = datetime.combine(now.date(), t, tzinfo=UTC)
+        if cand <= now:
+            cand += timedelta(days=1)
+        return cand
 
     def schedule_tick(self):
-        if self.schedule_enabled.get():
-            if not self.next_run_dt:
-                self.next_run_dt = self.compute_next_run()
-            if self.next_run_dt:
-                delta = self.next_run_dt - datetime.now(UTC)
-                if delta.total_seconds() <= 0 and not self.is_running:
-                    # declanșăm run
-                    self.run_now()
-                    self.next_run_dt = self.compute_next_run()
-                else:
-                    mins = int(delta.total_seconds() // 60)
-                    secs = int(delta.total_seconds() % 60)
-                    self.next_run_label.config(
-                        text=f"Următoarea postare în ~{mins}m {secs}s"
-                    )
+        now = datetime.now(UTC)
+
+        # actualizăm next_run pentru fiecare rundă dacă e nevoie
+        if self.schedule_morning_enabled.get():
+            if not self.next_run_morning:
+                self.next_run_morning = self.compute_next_for(
+                    self.schedule_morning_time_var.get(),
+                    True,
+                )
+            elif self.next_run_morning <= now:
+                # a „expirat” -> după ce rulează, îl recalculăm
+                self.next_run_morning = self.compute_next_for(
+                    self.schedule_morning_time_var.get(),
+                    True,
+                )
         else:
-            self.next_run_dt = None
+            self.next_run_morning = None
+
+        if self.schedule_evening_enabled.get():
+            if not self.next_run_evening:
+                self.next_run_evening = self.compute_next_for(
+                    self.schedule_evening_time_var.get(),
+                    True,
+                )
+            elif self.next_run_evening <= now:
+                self.next_run_evening = self.compute_next_for(
+                    self.schedule_evening_time_var.get(),
+                    True,
+                )
+        else:
+            self.next_run_evening = None
+
+        # alegem cea mai apropiată execuție
+        candidates = [dt for dt in [self.next_run_morning, self.next_run_evening] if dt]
+        if candidates:
+            next_dt = min(candidates)
+            delta = next_dt - now
+            if delta.total_seconds() <= 0 and not self.is_running:
+                # lansăm run acum
+                self.run_now()
+                # după run_now, la următorul tick se vor recalcula
+            else:
+                mins = int(delta.total_seconds() // 60)
+                secs = int(delta.total_seconds() % 60)
+                hhmm = next_dt.strftime("%H:%M")
+                self.next_run_label.config(
+                    text=f"Următoarea postare la {hhmm} (~{mins}m {secs}s)"
+                )
+        else:
             self.next_run_label.config(text="Programare oprită")
 
         self.root.after(1000, self.schedule_tick)
@@ -569,7 +641,8 @@ class FacepostApp:
             return
         # salvăm ce avem
         self.save_all()
-        # verificăm din nou licența rapid
+
+        # verificăm din nou licența
         email = (self.config.get("email") or "").strip().lower()
         if not email:
             messagebox.showerror(APP_NAME, "Te rog setează emailul licenței.", parent=self.root)
