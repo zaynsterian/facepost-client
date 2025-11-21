@@ -40,7 +40,7 @@ DEFAULT_CONFIG = {
     "image_files": [],
     "delay_seconds": 120,
 
-    # vechi (single scheduler) – le lăsăm pt compatibilitate, dar nu le mai folosim
+    # vechi (single scheduler) – compatibilitate
     "schedule_enabled": False,
     "schedule_time": "09:00",
 
@@ -50,6 +50,28 @@ DEFAULT_CONFIG = {
     "schedule_enabled_evening": False,
     "schedule_time_evening": "19:00",
 }
+
+
+def stable_fingerprint() -> str:
+    """
+    Generează un fingerprint stabil al device-ului.
+    Important: NU random, ca să nu se schimbe după update / reinstalare.
+    """
+    try:
+        mac = hex(uuid.getnode())
+    except Exception:
+        mac = "nomac"
+
+    parts = [
+        platform.node(),
+        platform.system(),
+        platform.release(),
+        platform.machine(),
+        platform.processor() or "",
+        mac,
+    ]
+    raw = "|".join([p for p in parts if p])
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
 def load_config() -> dict:
@@ -67,8 +89,7 @@ def load_config() -> dict:
 
     # device_id stabil
     if not cfg.get("device_id"):
-        hw = f"{platform.node()}-{uuid.uuid4()}"
-        cfg["device_id"] = hashlib.sha256(hw.encode("utf-8")).hexdigest()[:32]
+        cfg["device_id"] = stable_fingerprint()
 
     # profil Chrome dedicat
     if not cfg.get("chrome_profile_dir"):
@@ -76,7 +97,7 @@ def load_config() -> dict:
         base.mkdir(parents=True, exist_ok=True)
         cfg["chrome_profile_dir"] = str(base)
 
-    # mic fallback: dacă userul avea doar schedule_enabled vechi,
+    # fallback: dacă userul avea doar schedule_enabled vechi,
     # îl mapăm pe dimineață ca să nu piardă setarea
     if cfg.get("schedule_enabled") and not (
         cfg.get("schedule_enabled_morning") or cfg.get("schedule_enabled_evening")
@@ -108,9 +129,10 @@ def api_post(path: str, payload: dict) -> dict:
             data = r.json()
         except Exception:
             data = {"error": f"HTTP {r.status_code}"}
+        data["_http"] = r.status_code
         return data
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": str(e), "_http": 0}
 
 
 def bind_license(email: str, fingerprint: str) -> dict:
@@ -371,7 +393,7 @@ class FacepostApp:
         self.root.after(1000, self.schedule_tick)
 
         # la start, verificăm licența
-        self.check_license_startup()
+        self.ensure_license_ok(startup=True)
 
     # ---------- UI building ----------
 
@@ -516,33 +538,51 @@ class FacepostApp:
         save_config(self.config)
         messagebox.showinfo(APP_NAME, "Config salvat.", parent=self.root)
 
-    # ---------- Licență ----------
+    # ---------- Licență Stabilă + Auto-Bind ----------
 
-    def check_license_startup(self):
+    def ensure_license_ok(self, startup: bool = False) -> bool:
+        """
+        Verifică licența.
+        Dacă serverul zice unbound -> facem bind automat o dată.
+        """
         email = (self.config.get("email") or "").strip().lower()
+        fp = self.config.get("device_id")
+
         if not email:
-            self.status_var.set("Introduce emailul licenței și salvează.")
-            return
+            if startup:
+                self.status_var.set("Introduce emailul licenței și salvează.")
+            return False
 
-        self.status_var.set("Verific licența...")
-        self.root.update_idletasks()
+        if startup:
+            self.status_var.set("Verific licența...")
+            self.root.update_idletasks()
 
-        resp = check_license(email, self.config.get("device_id"))
-        if resp.get("status") == "ok":
-            self.status_var.set("Licență OK.")
-            return
-        else:
-            # încercăm și bind + check
-            b = bind_license(email, self.config.get("device_id"))
+        resp = check_license(email, fp)
+        st = resp.get("status")
+
+        if st == "ok":
+            if startup:
+                self.status_var.set("Licență OK.")
+            return True
+
+        # self-heal: dacă e unbound, încercăm bind
+        if st == "unbound" or "unbound" in str(resp.get("error", "")).lower():
+            b = bind_license(email, fp)
             if b.get("status") == "ok":
-                c = check_license(email, self.config.get("device_id"))
+                c = check_license(email, fp)
                 if c.get("status") == "ok":
-                    self.status_var.set("Licență OK.")
-                    return
+                    if startup:
+                        self.status_var.set("Licență OK (re-binded).")
+                    return True
+                else:
+                    resp = c
 
-        err = resp.get("error") or resp.get("status") or "Licență invalidă."
-        self.status_var.set(f"Probleme licență: {err}")
-        messagebox.showerror(APP_NAME, f"Probleme licență: {err}", parent=self.root)
+        # altfel e invalid / expired / inactive
+        err = resp.get("error") or st or "Licență invalidă."
+        if startup:
+            self.status_var.set(f"Probleme licență: {err}")
+            messagebox.showerror(APP_NAME, f"Probleme licență: {err}", parent=self.root)
+        return False
 
     # ---------- Programare zilnică (2 runde) ----------
 
@@ -569,18 +609,14 @@ class FacepostApp:
     def schedule_tick(self):
         now = datetime.now(UTC)
 
-        # actualizăm next_run pentru fiecare rundă dacă e nevoie
         if self.schedule_morning_enabled.get():
             if not self.next_run_morning:
                 self.next_run_morning = self.compute_next_for(
-                    self.schedule_morning_time_var.get(),
-                    True,
+                    self.schedule_morning_time_var.get(), True
                 )
             elif self.next_run_morning <= now:
-                # a „expirat” -> după ce rulează, îl recalculăm
                 self.next_run_morning = self.compute_next_for(
-                    self.schedule_morning_time_var.get(),
-                    True,
+                    self.schedule_morning_time_var.get(), True
                 )
         else:
             self.next_run_morning = None
@@ -588,26 +624,21 @@ class FacepostApp:
         if self.schedule_evening_enabled.get():
             if not self.next_run_evening:
                 self.next_run_evening = self.compute_next_for(
-                    self.schedule_evening_time_var.get(),
-                    True,
+                    self.schedule_evening_time_var.get(), True
                 )
             elif self.next_run_evening <= now:
                 self.next_run_evening = self.compute_next_for(
-                    self.schedule_evening_time_var.get(),
-                    True,
+                    self.schedule_evening_time_var.get(), True
                 )
         else:
             self.next_run_evening = None
 
-        # alegem cea mai apropiată execuție
         candidates = [dt for dt in [self.next_run_morning, self.next_run_evening] if dt]
         if candidates:
             next_dt = min(candidates)
             delta = next_dt - now
             if delta.total_seconds() <= 0 and not self.is_running:
-                # lansăm run acum
                 self.run_now()
-                # după run_now, la următorul tick se vor recalcula
             else:
                 mins = int(delta.total_seconds() // 60)
                 secs = int(delta.total_seconds() % 60)
@@ -639,26 +670,23 @@ class FacepostApp:
     def run_now(self):
         if self.is_running:
             return
-        # salvăm ce avem
+
         self.save_all()
 
-        # verificăm din nou licența
-        email = (self.config.get("email") or "").strip().lower()
-        if not email:
-            messagebox.showerror(APP_NAME, "Te rog setează emailul licenței.", parent=self.root)
-            return
-        resp = check_license(email, self.config.get("device_id"))
-        if resp.get("status") != "ok":
-            err = resp.get("error") or resp.get("status") or "Licență invalidă."
-            messagebox.showerror(APP_NAME, f"Nu pot porni: {err}", parent=self.root)
+        if not self.ensure_license_ok(startup=False):
+            messagebox.showerror(
+                APP_NAME,
+                "Licența nu este validă sau dispozitivul nu poate fi legat.",
+                parent=self.root,
+            )
             return
 
-        # colectăm datele
         groups_raw = self.group_text.get("1.0", "end").strip()
         groups = [g for g in groups_raw.splitlines() if g.strip()]
         if not groups:
             messagebox.showerror(APP_NAME, "Te rog introdu cel puțin un URL de grup.", parent=self.root)
             return
+
         text = self.post_text.get("1.0", "end").strip()
         try:
             delay = int(self.delay_var.get() or "120")
@@ -667,7 +695,6 @@ class FacepostApp:
 
         simulate = bool(self.simulate_var.get())
 
-        # rulăm în thread separat
         t = threading.Thread(
             target=self._run_thread,
             args=(groups, text, list(self.images), delay, simulate),
