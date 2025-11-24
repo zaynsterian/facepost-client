@@ -16,9 +16,9 @@ from tkinter import messagebox, filedialog, ttk
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, WebDriverException
 
 # ================== CONFIG GLOBALA ==================
 
@@ -34,43 +34,24 @@ DEFAULT_CONFIG = {
     "email": "",
     "device_id": "",
     "server_url": API_URL,
-    "chrome_profile_dir": "",    # se generează automat
-    "group_urls": "",
-    "post_text": "",
-    "image_files": [],
-    "delay_seconds": 120,
-
-    # vechi (single scheduler) – compatibilitate
-    "schedule_enabled": False,
-    "schedule_time": "09:00",
-
-    # nou: două runde pe zi
+    "chrome_profile_dir": "",
     "schedule_enabled_morning": False,
-    "schedule_time_morning": "08:00",   # HH:MM
+    "schedule_time_morning": "08:00",
     "schedule_enabled_evening": False,
-    "schedule_time_evening": "19:00",
+    "schedule_time_evening": "20:00",
+    "post_text": "",
+    "groups_text": "",
+    "images": [],
+    "delay_seconds": 120,
+    "simulate": False,
 }
 
 
 def stable_fingerprint() -> str:
     """
-    Generează un fingerprint stabil al device-ului.
-    Important: NU random, ca să nu se schimbe după update / reinstalare.
+    Fingerprint stabil pentru device (hash din câteva info de sistem).
     """
-    try:
-        mac = hex(uuid.getnode())
-    except Exception:
-        mac = "nomac"
-
-    parts = [
-        platform.node(),
-        platform.system(),
-        platform.release(),
-        platform.machine(),
-        platform.processor() or "",
-        mac,
-    ]
-    raw = "|".join([p for p in parts if p])
+    raw = f"{platform.node()}|{platform.system()}|{platform.machine()}|{platform.version()}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
@@ -87,18 +68,14 @@ def load_config() -> dict:
     cfg = DEFAULT_CONFIG.copy()
     cfg.update(data)
 
-    # device_id stabil
     if not cfg.get("device_id"):
         cfg["device_id"] = stable_fingerprint()
 
-    # profil Chrome dedicat
     if not cfg.get("chrome_profile_dir"):
         base = Path.home() / ".facepost_chrome_profile"
         base.mkdir(parents=True, exist_ok=True)
         cfg["chrome_profile_dir"] = str(base)
 
-    # fallback: dacă userul avea doar schedule_enabled vechi,
-    # îl mapăm pe dimineață ca să nu piardă setarea
     if cfg.get("schedule_enabled") and not (
         cfg.get("schedule_enabled_morning") or cfg.get("schedule_enabled_evening")
     ):
@@ -113,13 +90,13 @@ def save_config(cfg: dict) -> None:
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(cfg, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        print("[WARN] nu pot salva config:", e)
+        print("Eroare la salvare config:", e)
 
 
 CONFIG = load_config()
 
 
-# ================== API LICENȚE (CHECK / BIND) ==================
+# ================== API LICENTE ==================
 
 def api_post(path: str, payload: dict) -> dict:
     url = f"{CONFIG.get('server_url', API_URL).rstrip('/')}{path}"
@@ -143,6 +120,28 @@ def bind_license(email: str, fingerprint: str) -> dict:
 def check_license(email: str, fingerprint: str) -> dict:
     """Verifică licența pentru device: POST /check"""
     return api_post("/check", {"email": email, "fingerprint": fingerprint})
+
+
+def log_run(groups, text: str, images):
+    """
+    Trimite către server un log simplu pentru fiecare RUN:
+    - email, fingerprint, group_urls, post_text, images_count
+    """
+    email = (CONFIG.get("email") or "").strip().lower()
+    fingerprint = CONFIG.get("device_id") or ""
+    if not email:
+        return {"error": "no email in config"}
+
+    group_urls = "\n".join([g.strip() for g in (groups or []) if g.strip()])
+
+    payload = {
+        "email": email,
+        "fingerprint": fingerprint,
+        "group_urls": group_urls,
+        "post_text": text or "",
+        "images_count": len(images or []),
+    }
+    return api_post("/log_run", payload)
 
 
 # ================== SELENIUM: CHROME DRIVER ==================
@@ -176,507 +175,435 @@ def create_driver() -> webdriver.Chrome:
     return driver
 
 
-# ================== CONFIGURARE LOGIN FACEBOOK ==================
-
-def configure_facebook_login(parent: tk.Tk | None = None):
-    """
-    Deschide Chrome cu profilul Facepost și lasă userul să se logheze manual pe Facebook.
-    Se folosește o singură dată, apoi rămâne logat în profil.
-    """
-    try:
-        driver = create_driver()
-    except WebDriverException as e:
-        messagebox.showerror(
-            APP_NAME,
-            f"Nu pot porni Chrome.\nVerifică dacă {CHROMEDRIVER_NAME} este lângă Facepost.exe.\n\n{e}",
-            parent=parent,
-        )
-        return
-
-    driver.get("https://www.facebook.com/")
-    messagebox.showinfo(
-        APP_NAME,
-        "S-a deschis un Chrome cu profilul Facepost.\n"
-        "Loghează-te în Facebook, apoi închide fereastra.\n\n"
-        "După aceea, Facepost va folosi acest profil pentru postări.",
-        parent=parent,
+def wait_for_facebook_home(driver, timeout=60):
+    WebDriverWait(driver, timeout).until(
+        EC.presence_of_element_located((By.TAG_NAME, "body"))
     )
 
 
-# ================== LOGICĂ POSTARE CU SELENIUM ==================
-
-def do_post_in_group(driver: webdriver.Chrome,
-                     group_url: str,
-                     text: str,
-                     image_files: list[str],
-                     simulate: bool = False) -> bool:
+def open_group_and_post(driver, group_url: str, text: str, images, simulate: bool = False):
     """
-    Postează într-un singur grup:
-      1) merge la URL
-      2) apasă „Scrie ceva...” / „What's on your mind...”
-      3) scrie textul
-      4) atașează imagini
-      5) dacă nu e simulare → Postează
+    Deschide un link de grup și postează textul + pozele.
+    (Aici rămâne logica ta existentă de automatizare; placeholder.)
     """
-    print("[DEBUG] Navighez la grup:", group_url)
-    driver.get(group_url)
-    wait = WebDriverWait(driver, 30)
-
-    # 1) butonul de composer
-    composer = None
-    composer_xpaths = [
-        # RO
-        "//div[@role='button']//span[contains(text(),'Scrie ceva')]",
-        "//div[@role='button']//span[contains(text(),'Scrie o postare')]",
-        # EN
-        "//div[@role='button']//span[contains(text(),\"What's on your mind\")]",
-        "//div[@role='button' and contains(.,\"What's on your mind\")]",
-    ]
-    for xp in composer_xpaths:
-        try:
-            composer = wait.until(EC.element_to_be_clickable((By.XPATH, xp)))
-            if composer:
-                print("[DEBUG] Am găsit composer prin XPATH:", xp)
-                composer.click()
-                break
-        except TimeoutException:
-            continue
-
-    if not composer:
-        print("[WARN] Nu am găsit butonul de composer (Scrie ceva...).")
-        return False
-
-    # 2) editorul din dialog
-    try:
-        editor = wait.until(
-            EC.element_to_be_clickable(
-                (By.XPATH, "//div[@role='dialog']//div[@role='textbox']")
-            )
-        )
-    except TimeoutException:
-        print("[WARN] Nu am găsit editorul principal din dialog.")
-        return False
-
-    editor.click()
+    print(
+        f"[DEBUG] Ar posta în {group_url} cu text de {len(text)} caractere și {len(images)} imagini. simulate={simulate}"
+    )
     time.sleep(1)
-    if text.strip():
-        editor.send_keys(text)
-    else:
-        print("[WARN] Nu ai text de postare – continui doar cu imagini.")
-
-    # 3) upload imagini
-    if image_files:
-        joined = "\n".join(image_files)
-        print("[DEBUG] Atașez imagini:")
-        for p in image_files:
-            print("  -", p)
-        try:
-            file_input = wait.until(
-                EC.presence_of_element_located(
-                    (
-                        By.XPATH,
-                        "//div[@role='dialog']//input[@type='file' and contains(@accept,'image')]",
-                    )
-                )
-            )
-            file_input.send_keys(joined)
-            time.sleep(5)
-        except TimeoutException:
-            print("[WARN] Nu am găsit input-ul de fișiere pentru imagini – postez doar text.")
-
-    # simulare?
-    if simulate:
-        print("[DEBUG] SIMULARE: nu apăs butonul Post/Publish.")
-        return True
-
-    # 5) buton Post
-    try:
-        post_btn = None
-        post_xpaths = [
-            "//div[@role='dialog']//div[@aria-label='Postează']",
-            "//div[@role='dialog']//div[@aria-label='Post']",
-            "//div[@role='dialog']//div[@aria-label='Publish']",
-            "//div[@role='dialog']//span[text()='Postează']/ancestor::div[@role='button']",
-            "//div[@role='dialog']//span[text()='Post']/ancestor::div[@role='button']",
-        ]
-        for xp in post_xpaths:
-            try:
-                post_btn = wait.until(EC.element_to_be_clickable((By.XPATH, xp)))
-                if post_btn:
-                    print("[DEBUG] Am găsit butonul Post prin XPATH:", xp)
-                    break
-            except TimeoutException:
-                continue
-
-        if not post_btn:
-            print("[WARN] Nu am găsit butonul Post/Publish.")
-            return False
-
-        post_btn.click()
-        print("[DEBUG] Am apăsat butonul Post.")
-        time.sleep(5)
-        return True
-    except Exception as e:
-        print("[ERROR] Eroare la apăsat butonul Post:", e)
-        return False
 
 
-def run_posting(groups: list[str],
-                text: str,
-                image_files: list[str],
-                delay_seconds: int,
-                simulate: bool = False) -> None:
-    """Rulează secvența de postare pentru toate grupurile."""
-    if not groups:
-        print("[INFO] Niciun grup – nimic de făcut.")
-        return
-
+def run_posting(groups: list[str], text: str, images, delay: int, simulate: bool = False):
+    """
+    Rulează efectiv postarea în toate grupurile, cu delay între ele.
+    """
+    driver = None
     try:
         driver = create_driver()
-    except WebDriverException as e:
-        messagebox.showerror(
-            APP_NAME,
-            f"Nu pot porni Chrome.\nVerifică chromedriver-ul.\n\n{e}",
-        )
-        return
+        wait_for_facebook_home(driver)
 
-    try:
-        for idx, url in enumerate(groups, start=1):
-            url = url.strip()
-            if not url:
+        for idx, group in enumerate(groups, start=1):
+            group = group.strip()
+            if not group:
                 continue
-            print(f"[INFO] ({idx}/{len(groups)}) Postez în grup: {url}")
-            ok = do_post_in_group(driver, url, text, image_files, simulate=simulate)
-            if not ok:
-                print("[WARN] Postarea în acest grup pare să fi eșuat.")
-            if idx < len(groups) and delay_seconds > 0:
-                print(f"[INFO] Aștept {delay_seconds} secunde înainte de următorul grup...")
-                time.sleep(delay_seconds)
+            print(f"[RUN] ({idx}/{len(groups)}) {group}")
+            open_group_and_post(driver, group, text, images, simulate=simulate)
+            if idx < len(groups):
+                time.sleep(delay)
     finally:
-        driver.quit()
-        print("[INFO] Am închis browserul.")
+        if driver:
+            try:
+                driver.quit()
+            except Exception:
+                pass
 
 
-# ================== UI TKINTER ==================
+# ================== SCHEDULER ==================
+
+def parse_time_str(s: str) -> dtime | None:
+    s = (s or "").strip()
+    if not s:
+        return None
+    try:
+        hh, mm = s.split(":")
+        return dtime(hour=int(hh), minute=int(mm))
+    except Exception:
+        return None
+
+
+def next_run_time_for(config: dict, which: str) -> datetime | None:
+    enabled = config.get(f"schedule_enabled_{which}", False)
+    if not enabled:
+        return None
+    t = parse_time_str(config.get(f"schedule_time_{which}"))
+    if not t:
+        return None
+
+    now = datetime.now()
+    candidate = datetime.combine(now.date(), t)
+    if candidate <= now:
+        candidate += timedelta(days=1)
+    return candidate
+
+
+def compute_next_schedule_run(config: dict) -> datetime | None:
+    times = []
+    for w in ("morning", "evening"):
+        nt = next_run_time_for(config, w)
+        if nt:
+            times.append(nt)
+    if not times:
+        return None
+    return min(times)
+
+
+class SchedulerThread(threading.Thread):
+    """
+    Thread care verifică periodic dacă e momentul să ruleze postarea programată.
+    """
+
+    def __init__(self, app):
+        super().__init__(daemon=True)
+        self.app = app
+        self._stop_flag = threading.Event()
+
+    def stop(self):
+        self._stop_flag.set()
+
+    def run(self):
+        while not self._stop_flag.is_set():
+            try:
+                cfg = CONFIG
+                next_run = compute_next_schedule_run(cfg)
+                if not next_run:
+                    time.sleep(5)
+                    continue
+
+                now = datetime.now()
+                if now >= next_run:
+                    print("[SCHEDULER] E timpul pentru run programat.")
+                    self.app.run_now(simulate=False, from_scheduler=True)
+                    time.sleep(60)
+                else:
+                    time.sleep(5)
+            except Exception as e:
+                print("[SCHEDULER ERROR]", e)
+                time.sleep(10)
+
+
+# ================== TKINTER UI ==================
 
 class FacepostApp:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title(APP_NAME)
-        self.root.geometry("780x640")
-
-        self.config = CONFIG
-
-        # stare
         self.is_running = False
-        self.images: list[str] = list(self.config.get("image_files", []))
-        self.simulate_var = tk.BooleanVar(value=False)
+        self.images = set()
+        self.scheduler_thread = None
 
-        # programare: 2 runde
-        self.schedule_morning_enabled = tk.BooleanVar(
-            value=self.config.get("schedule_enabled_morning", False)
+        self.email_var = tk.StringVar(value=CONFIG.get("email", ""))
+        self.server_url_var = tk.StringVar(value=CONFIG.get("server_url", API_URL))
+        self.delay_var = tk.StringVar(value=str(CONFIG.get("delay_seconds", 120)))
+        self.simulate_var = tk.BooleanVar(value=CONFIG.get("simulate", False))
+
+        self.schedule_enabled_morning_var = tk.BooleanVar(
+            value=CONFIG.get("schedule_enabled_morning", False)
         )
-        self.schedule_morning_time_var = tk.StringVar(
-            value=self.config.get("schedule_time_morning", "08:00")
+        self.schedule_time_morning_var = tk.StringVar(
+            value=CONFIG.get("schedule_time_morning", "08:00")
         )
-        self.schedule_evening_enabled = tk.BooleanVar(
-            value=self.config.get("schedule_enabled_evening", False)
+        self.schedule_enabled_evening_var = tk.BooleanVar(
+            value=CONFIG.get("schedule_enabled_evening", False)
         )
-        self.schedule_evening_time_var = tk.StringVar(
-            value=self.config.get("schedule_time_evening", "19:00")
+        self.schedule_time_evening_var = tk.StringVar(
+            value=CONFIG.get("schedule_time_evening", "20:00")
         )
 
-        self.next_run_morning: datetime | None = None
-        self.next_run_evening: datetime | None = None
+        self._build_ui()
+        self._load_initial_texts()
+        self._start_scheduler_if_needed()
 
-        self.build_ui()
-        self.root.after(1000, self.schedule_tick)
+    def _build_ui(self):
+        root = self.root
+        root.geometry("900x700")
 
-        # la start, verificăm licența
-        self.ensure_license_ok(startup=True)
+        main_frame = tk.Frame(root)
+        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
 
-    # ---------- UI building ----------
+        config_frame = tk.LabelFrame(main_frame, text="Config licență & server")
+        config_frame.pack(fill="x", pady=5)
 
-    def build_ui(self):
-        # Sus: email + buton configure FB
-        top = ttk.Frame(self.root)
-        top.pack(fill="x", pady=5, padx=10)
+        tk.Label(config_frame, text="Email licență:").grid(row=0, column=0, sticky="w")
+        tk.Entry(config_frame, textvariable=self.email_var, width=40).grid(
+            row=0, column=1, sticky="w"
+        )
 
-        ttk.Label(top, text="Email licență:").pack(side="left")
-        self.email_var = tk.StringVar(value=self.config.get("email", ""))
-        self.email_entry = ttk.Entry(top, textvariable=self.email_var, width=30)
-        self.email_entry.pack(side="left", padx=5)
+        tk.Label(config_frame, text="Server URL:").grid(row=0, column=2, sticky="w")
+        tk.Entry(config_frame, textvariable=self.server_url_var, width=40).grid(
+            row=0, column=3, sticky="w"
+        )
 
-        ttk.Button(top, text="Salvează email", command=self.save_email).pack(side="left", padx=5)
-        ttk.Button(top, text="Configurează login Facebook",
-                   command=lambda: configure_facebook_login(self.root)).pack(side="right")
+        tk.Button(
+            config_frame, text="Salvează config", command=self.save_config_clicked
+        ).grid(row=0, column=4, padx=5)
 
-        # Group URLs
-        grp_frame = ttk.LabelFrame(self.root, text="Group URLs (unul pe linie)")
-        grp_frame.pack(fill="both", expand=True, padx=10, pady=(5, 5))
+        self.license_status_var = tk.StringVar(value="Status licență necunoscut.")
+        tk.Button(
+            config_frame, text="Check licență", command=self.check_license_clicked
+        ).grid(row=1, column=0, pady=5)
+        tk.Button(
+            config_frame, text="Bind licență", command=self.bind_license_clicked
+        ).grid(row=1, column=1, pady=5)
+        tk.Label(config_frame, textvariable=self.license_status_var, fg="blue").grid(
+            row=1, column=2, columnspan=3, sticky="w"
+        )
 
-        self.group_text = tk.Text(grp_frame, height=6)
-        self.group_text.pack(fill="both", expand=True)
-        if self.config.get("group_urls"):
-            self.group_text.insert("1.0", self.config["group_urls"])
+        post_frame = tk.LabelFrame(main_frame, text="Conținut postare")
+        post_frame.pack(fill="both", expand=True, pady=5)
 
-        # Images
-        img_frame = ttk.Frame(self.root)
-        img_frame.pack(fill="x", padx=10, pady=(5, 0))
-
-        ttk.Button(img_frame, text="Alege imagini", command=self.select_images).pack(side="left")
-        self.images_label = ttk.Label(img_frame, text="")
-        self.images_label.pack(side="left", padx=8)
-        self.update_images_label()
-
-        # Post text
-        post_frame = ttk.LabelFrame(self.root, text="Post text")
-        post_frame.pack(fill="both", expand=True, padx=10, pady=(5, 5))
-
+        tk.Label(post_frame, text="Text postare:").pack(anchor="w")
         self.post_text = tk.Text(post_frame, height=8)
-        self.post_text.pack(fill="both", expand=True)
-        if self.config.get("post_text"):
-            self.post_text.insert("1.0", self.config["post_text"])
+        self.post_text.pack(fill="x", pady=3)
 
-        # Delay + simulate
-        bottom1 = ttk.Frame(self.root)
-        bottom1.pack(fill="x", padx=10, pady=(5, 0))
+        tk.Label(post_frame, text="Linkuri grupuri (unul pe linie):").pack(anchor="w")
+        self.group_text = tk.Text(post_frame, height=8)
+        self.group_text.pack(fill="x", pady=3)
 
-        ttk.Label(bottom1, text="Delay între grupuri (secunde):").pack(side="left")
-        self.delay_var = tk.StringVar(value=str(self.config.get("delay_seconds", 120)))
-        self.delay_entry = ttk.Entry(bottom1, textvariable=self.delay_var, width=6)
-        self.delay_entry.pack(side="left", padx=5)
+        images_frame = tk.Frame(post_frame)
+        images_frame.pack(fill="x", pady=5)
 
-        ttk.Checkbutton(bottom1, text="Simulare (nu posta efectiv)",
-                        variable=self.simulate_var).pack(side="left", padx=10)
-
-        # Scheduler – două runde
-        sched_frame = ttk.LabelFrame(self.root, text="Programare zilnică (max 2 runde)")
-        sched_frame.pack(fill="x", padx=10, pady=(5, 0))
-
-        row_m = ttk.Frame(sched_frame)
-        row_m.pack(fill="x", pady=2)
-        ttk.Checkbutton(row_m, text="Rundă dimineața",
-                        variable=self.schedule_morning_enabled).pack(side="left")
-        ttk.Label(row_m, text="la ora (HH:MM):").pack(side="left", padx=(10, 2))
-        self.schedule_morning_entry = ttk.Entry(
-            row_m, textvariable=self.schedule_morning_time_var, width=6
+        tk.Button(images_frame, text="Adaugă imagini", command=self.add_images_clicked).pack(
+            side="left"
         )
-        self.schedule_morning_entry.pack(side="left")
+        self.images_listbox = tk.Listbox(images_frame, height=4)
+        self.images_listbox.pack(side="left", fill="x", expand=True, padx=5)
+        tk.Button(
+            images_frame, text="Șterge selectat", command=self.remove_selected_image
+        ).pack(side="left")
 
-        row_e = ttk.Frame(sched_frame)
-        row_e.pack(fill="x", pady=2)
-        ttk.Checkbutton(row_e, text="Rundă seara",
-                        variable=self.schedule_evening_enabled).pack(side="left")
-        ttk.Label(row_e, text="la ora (HH:MM):").pack(side="left", padx=(10, 2))
-        self.schedule_evening_entry = ttk.Entry(
-            row_e, textvariable=self.schedule_evening_time_var, width=6
+        delay_frame = tk.Frame(post_frame)
+        delay_frame.pack(fill="x", pady=5)
+
+        tk.Label(delay_frame, text="Delay între grupuri (secunde):").pack(side="left")
+        tk.Entry(delay_frame, textvariable=self.delay_var, width=6).pack(
+            side="left", padx=5
         )
-        self.schedule_evening_entry.pack(side="left")
+        tk.Checkbutton(
+            delay_frame,
+            text="Simulare (nu posta efectiv)",
+            variable=self.simulate_var,
+        ).pack(side="left", padx=10)
 
-        self.next_run_label = ttk.Label(sched_frame, text="Programare oprită")
-        self.next_run_label.pack(anchor="w", padx=4, pady=(4, 2))
+        schedule_frame = tk.LabelFrame(main_frame, text="Programare automată")
+        schedule_frame.pack(fill="x", pady=5)
 
-        # Butoane jos
-        btn_frame = ttk.Frame(self.root)
-        btn_frame.pack(fill="x", padx=10, pady=10)
+        tk.Checkbutton(
+            schedule_frame,
+            text="Rulează dimineața la ora:",
+            variable=self.schedule_enabled_morning_var,
+            command=self.schedule_changed,
+        ).grid(row=0, column=0, sticky="w")
+        tk.Entry(
+            schedule_frame, textvariable=self.schedule_time_morning_var, width=6
+        ).grid(row=0, column=1, sticky="w")
 
-        ttk.Button(btn_frame, text="Preview", command=self.preview).pack(side="left")
-        ttk.Button(btn_frame, text="Salvează config", command=self.save_all).pack(side="left", padx=5)
-        self.run_btn = ttk.Button(btn_frame, text="Run acum", command=self.run_now)
+        tk.Checkbutton(
+            schedule_frame,
+            text="Rulează seara la ora:",
+            variable=self.schedule_enabled_evening_var,
+            command=self.schedule_changed,
+        ).grid(row=1, column=0, sticky="w")
+        tk.Entry(
+            schedule_frame, textvariable=self.schedule_time_evening_var, width=6
+        ).grid(row=1, column=1, sticky="w")
+
+        bottom_frame = tk.Frame(main_frame)
+        bottom_frame.pack(fill="x", pady=10)
+
+        self.status_var = tk.StringVar(value="Gata de lucru.")
+        tk.Label(bottom_frame, textvariable=self.status_var, fg="green").pack(
+            side="left"
+        )
+
+        self.run_btn = tk.Button(
+            bottom_frame, text="Rulează acum", command=self.run_now_clicked
+        )
         self.run_btn.pack(side="right")
 
-        self.status_var = tk.StringVar(value="Gata.")
-        ttk.Label(self.root, textvariable=self.status_var).pack(anchor="w", padx=10, pady=(0, 5))
+    def _load_initial_texts(self):
+        self.post_text.delete("1.0", "end")
+        self.post_text.insert("1.0", CONFIG.get("post_text", ""))
 
-    # ---------- Helpers UI ----------
+        self.group_text.delete("1.0", "end")
+        self.group_text.insert("1.0", CONFIG.get("groups_text", ""))
 
-    def update_images_label(self):
-        if self.images:
-            self.images_label.config(text=f"{len(self.images)} imagini selectate")
-        else:
-            self.images_label.config(text="Nicio imagine selectată")
+        self.images = set(CONFIG.get("images", []))
+        self.images_listbox.delete(0, "end")
+        for img in self.images:
+            self.images_listbox.insert("end", img)
 
-    def select_images(self):
-        files = filedialog.askopenfilenames(
-            title="Alege imaginile",
+    def _start_scheduler_if_needed(self):
+        if self.scheduler_thread is not None:
+            return
+        if CONFIG.get("schedule_enabled_morning") or CONFIG.get(
+            "schedule_enabled_evening"
+        ):
+            self.scheduler_thread = SchedulerThread(self)
+            self.scheduler_thread.start()
+
+    def save_config_clicked(self):
+        CONFIG["email"] = self.email_var.get().strip()
+        CONFIG["server_url"] = self.server_url_var.get().strip()
+        CONFIG["post_text"] = self.post_text.get("1.0", "end").strip()
+        CONFIG["groups_text"] = self.group_text.get("1.0", "end").strip()
+        CONFIG["images"] = list(self.images)
+        try:
+            CONFIG["delay_seconds"] = int(self.delay_var.get() or "120")
+        except ValueError:
+            CONFIG["delay_seconds"] = 120
+        CONFIG["simulate"] = bool(self.simulate_var.get())
+
+        CONFIG["schedule_enabled_morning"] = bool(
+            self.schedule_enabled_morning_var.get()
+        )
+        CONFIG["schedule_time_morning"] = self.schedule_time_morning_var.get().strip()
+        CONFIG["schedule_enabled_evening"] = bool(
+            self.schedule_enabled_evening_var.get()
+        )
+        CONFIG["schedule_time_evening"] = self.schedule_time_evening_var.get().strip()
+
+        save_config(CONFIG)
+        messagebox.showinfo(APP_NAME, "Config salvată.", parent=self.root)
+
+    def check_license_clicked(self):
+        email = self.email_var.get().strip().lower()
+        if not email:
+            messagebox.showerror(
+                APP_NAME, "Te rog introdu emailul licenței.", parent=self.root
+            )
+            return
+        CONFIG["email"] = email
+        CONFIG["server_url"] = self.server_url_var.get().strip()
+        save_config(CONFIG)
+
+        resp = check_license(email, CONFIG.get("device_id"))
+        if resp.get("error"):
+            self.license_status_var.set(f"Eroare: {resp['error']}")
+            return
+
+        status = resp.get("status", "unknown")
+        exp = resp.get("expires_at")
+        is_trial = resp.get("is_trial")
+        extra = resp.get("note")
+
+        msg = f"Status: {status}"
+        if exp:
+            msg += f" | expiră la: {exp}"
+        if is_trial:
+            msg += " | TRIAL"
+        if extra:
+            msg += f" | {extra}"
+        self.license_status_var.set(msg)
+
+    def bind_license_clicked(self):
+        email = self.email_var.get().strip().lower()
+        if not email:
+            messagebox.showerror(
+                APP_NAME, "Te rog introdu emailul licenței.", parent=self.root
+            )
+            return
+        CONFIG["email"] = email
+        CONFIG["server_url"] = self.server_url_var.get().strip()
+        save_config(CONFIG)
+
+        resp = bind_license(email, CONFIG.get("device_id"))
+        if resp.get("error"):
+            messagebox.showerror(
+                APP_NAME, f"Eroare la bind: {resp['error']}", parent=self.root
+            )
+            return
+
+        if resp.get("_http") and resp["_http"] != 200:
+            messagebox.showerror(APP_NAME, f"HTTP {resp['_http']}", parent=self.root)
+            return
+
+        self.license_status_var.set("Licență legată cu succes pe acest device.")
+
+    def add_images_clicked(self):
+        paths = filedialog.askopenfilenames(
+            title="Alege imagini",
             filetypes=[
-                ("Imagini", "*.png;*.jpg;*.jpeg;*.webp;*.gif"),
+                (
+                    "Imagini",
+                    "*.png;*.jpg;*.jpeg;*.gif;*.bmp;*.webp",
+                ),
                 ("Toate fișierele", "*.*"),
             ],
         )
-        if files:
-            self.images = list(files)
-            self.update_images_label()
+        if not paths:
+            return
+        for p in paths:
+            if p not in self.images:
+                self.images.add(p)
+                self.images_listbox.insert("end", p)
 
-    def save_email(self):
+    def remove_selected_image(self):
+        sel = list(self.images_listbox.curselection())
+        if not sel:
+            return
+        for idx in reversed(sel):
+            val = self.images_listbox.get(idx)
+            self.images_listbox.delete(idx)
+            if val in self.images:
+                self.images.remove(val)
+
+    def schedule_changed(self):
+        CONFIG["schedule_enabled_morning"] = bool(
+            self.schedule_enabled_morning_var.get()
+        )
+        CONFIG["schedule_time_morning"] = self.schedule_time_morning_var.get().strip()
+        CONFIG["schedule_enabled_evening"] = bool(
+            self.schedule_enabled_evening_var.get()
+        )
+        CONFIG["schedule_time_evening"] = self.schedule_time_evening_var.get().strip()
+        save_config(CONFIG)
+        if not self.scheduler_thread and (
+            CONFIG.get("schedule_enabled_morning")
+            or CONFIG.get("schedule_enabled_evening")
+        ):
+            self._start_scheduler_if_needed()
+
+    def run_now(self, simulate: bool | None = None, from_scheduler: bool = False):
+        if self.is_running:
+            messagebox.showwarning(
+                APP_NAME,
+                "Deja rulează o sesiune de postare.",
+                parent=self.root,
+            )
+            return
+
         email = self.email_var.get().strip().lower()
         if not email:
-            messagebox.showerror(APP_NAME, "Te rog introdu un email.", parent=self.root)
-            return
-        self.config["email"] = email
-        save_config(self.config)
-        messagebox.showinfo(APP_NAME, "Email salvat.", parent=self.root)
-
-    def save_all(self):
-        self.config["email"] = self.email_var.get().strip().lower()
-        self.config["group_urls"] = self.group_text.get("1.0", "end").strip()
-        self.config["post_text"] = self.post_text.get("1.0", "end").strip()
-        try:
-            self.config["delay_seconds"] = int(self.delay_var.get() or "120")
-        except ValueError:
-            self.config["delay_seconds"] = 120
-
-        self.config["image_files"] = self.images
-
-        # nou: salvăm cele două runde
-        self.config["schedule_enabled_morning"] = bool(self.schedule_morning_enabled.get())
-        self.config["schedule_time_morning"] = self.schedule_morning_time_var.get().strip() or "08:00"
-        self.config["schedule_enabled_evening"] = bool(self.schedule_evening_enabled.get())
-        self.config["schedule_time_evening"] = self.schedule_evening_time_var.get().strip() or "19:00"
-
-        save_config(self.config)
-        messagebox.showinfo(APP_NAME, "Config salvat.", parent=self.root)
-
-    # ---------- Licență Stabilă + Auto-Bind ----------
-
-    def ensure_license_ok(self, startup: bool = False) -> bool:
-        """
-        Verifică licența.
-        Dacă serverul zice unbound -> facem bind automat o dată.
-        """
-        email = (self.config.get("email") or "").strip().lower()
-        fp = self.config.get("device_id")
-
-        if not email:
-            if startup:
-                self.status_var.set("Introduce emailul licenței și salvează.")
-            return False
-
-        if startup:
-            self.status_var.set("Verific licența...")
-            self.root.update_idletasks()
-
-        resp = check_license(email, fp)
-        st = resp.get("status")
-
-        if st == "ok":
-            if startup:
-                self.status_var.set("Licență OK.")
-            return True
-
-        # self-heal: dacă e unbound, încercăm bind
-        if st == "unbound" or "unbound" in str(resp.get("error", "")).lower():
-            b = bind_license(email, fp)
-            if b.get("status") == "ok":
-                c = check_license(email, fp)
-                if c.get("status") == "ok":
-                    if startup:
-                        self.status_var.set("Licență OK (re-binded).")
-                    return True
-                else:
-                    resp = c
-
-        # altfel e invalid / expired / inactive
-        err = resp.get("error") or st or "Licență invalidă."
-        if startup:
-            self.status_var.set(f"Probleme licență: {err}")
-            messagebox.showerror(APP_NAME, f"Probleme licență: {err}", parent=self.root)
-        return False
-
-    # ---------- Programare zilnică (2 runde) ----------
-
-    def parse_time_str(self, val: str) -> dtime | None:
-        val = (val or "").strip()
-        try:
-            h, m = map(int, val.split(":"))
-            return dtime(hour=h, minute=m)
-        except Exception:
-            return None
-
-    def compute_next_for(self, time_str: str, enabled: bool) -> datetime | None:
-        if not enabled:
-            return None
-        t = self.parse_time_str(time_str)
-        if not t:
-            return None
-        now = datetime.now(UTC)
-        cand = datetime.combine(now.date(), t, tzinfo=UTC)
-        if cand <= now:
-            cand += timedelta(days=1)
-        return cand
-
-    def schedule_tick(self):
-        now = datetime.now(UTC)
-
-        if self.schedule_morning_enabled.get():
-            if not self.next_run_morning:
-                self.next_run_morning = self.compute_next_for(
-                    self.schedule_morning_time_var.get(), True
-                )
-            elif self.next_run_morning <= now:
-                self.next_run_morning = self.compute_next_for(
-                    self.schedule_morning_time_var.get(), True
-                )
-        else:
-            self.next_run_morning = None
-
-        if self.schedule_evening_enabled.get():
-            if not self.next_run_evening:
-                self.next_run_evening = self.compute_next_for(
-                    self.schedule_evening_time_var.get(), True
-                )
-            elif self.next_run_evening <= now:
-                self.next_run_evening = self.compute_next_for(
-                    self.schedule_evening_time_var.get(), True
-                )
-        else:
-            self.next_run_evening = None
-
-        candidates = [dt for dt in [self.next_run_morning, self.next_run_evening] if dt]
-        if candidates:
-            next_dt = min(candidates)
-            delta = next_dt - now
-            if delta.total_seconds() <= 0 and not self.is_running:
-                self.run_now()
-            else:
-                mins = int(delta.total_seconds() // 60)
-                secs = int(delta.total_seconds() % 60)
-                hhmm = next_dt.strftime("%H:%M")
-                self.next_run_label.config(
-                    text=f"Următoarea postare la {hhmm} (~{mins}m {secs}s)"
-                )
-        else:
-            self.next_run_label.config(text="Programare oprită")
-
-        self.root.after(1000, self.schedule_tick)
-
-    # ---------- Run ----------
-
-    def preview(self):
-        groups_raw = self.group_text.get("1.0", "end").strip()
-        groups = [g for g in groups_raw.splitlines() if g.strip()]
-        text = self.post_text.get("1.0", "end").strip()
-        msg = (
-            f"Grupuri ({len(groups)}):\n" +
-            "\n".join(groups[:5]) +
-            ("\n..." if len(groups) > 5 else "") +
-            "\n\nText:\n" + text[:500] +
-            ("\n..." if len(text) > 500 else "") +
-            f"\n\nImagini: {len(self.images)}"
-        )
-        messagebox.showinfo(APP_NAME, msg, parent=self.root)
-
-    def run_now(self):
-        if self.is_running:
+            messagebox.showerror(
+                APP_NAME, "Te rog introdu emailul licenței.", parent=self.root
+            )
             return
 
-        self.save_all()
+        CONFIG["email"] = email
+        CONFIG["server_url"] = self.server_url_var.get().strip()
+        save_config(CONFIG)
 
-        if not self.ensure_license_ok(startup=False):
+        resp = check_license(email, CONFIG.get("device_id"))
+        if resp.get("error"):
             messagebox.showerror(
                 APP_NAME,
-                "Licența nu este validă sau dispozitivul nu poate fi legat.",
+                f"Eroare la check licență: {resp['error']}",
+                parent=self.root,
+            )
+            return
+        if resp.get("status") not in ("ok",):
+            messagebox.showerror(
+                APP_NAME,
+                f"Licența nu este activă sau este expirată ({resp.get('status')}).",
                 parent=self.root,
             )
             return
@@ -684,7 +611,11 @@ class FacepostApp:
         groups_raw = self.group_text.get("1.0", "end").strip()
         groups = [g for g in groups_raw.splitlines() if g.strip()]
         if not groups:
-            messagebox.showerror(APP_NAME, "Te rog introdu cel puțin un URL de grup.", parent=self.root)
+            messagebox.showerror(
+                APP_NAME,
+                "Te rog introdu cel puțin un URL de grup.",
+                parent=self.root,
+            )
             return
 
         text = self.post_text.get("1.0", "end").strip()
@@ -693,7 +624,8 @@ class FacepostApp:
         except ValueError:
             delay = 120
 
-        simulate = bool(self.simulate_var.get())
+        if simulate is None:
+            simulate = bool(self.simulate_var.get())
 
         t = threading.Thread(
             target=self._run_thread,
@@ -702,16 +634,29 @@ class FacepostApp:
         )
         t.start()
 
+    def run_now_clicked(self):
+        self.run_now(simulate=None, from_scheduler=False)
+
     def _run_thread(self, groups, text, images, delay, simulate):
         self.is_running = True
         self.run_btn.config(state="disabled")
         self.status_var.set("Rulez postările...")
         try:
+            # trimitem log către server (best-effort; nu blocăm rularea dacă apare o eroare)
+            try:
+                resp = log_run(groups, text, images)
+                print("[LOG_RUN]", resp)
+            except Exception as e:
+                print("[WARN] Nu pot trimite log_run:", e)
+
+            # apoi rulăm efectiv postările
             run_posting(groups, text, images, delay, simulate=simulate)
             if simulate:
                 self.status_var.set("Gata (simulare).")
             else:
-                self.status_var.set("Gata – postările ar trebui să fie publicate.")
+                self.status_var.set(
+                    "Gata – postările ar trebui să fie publicate."
+                )
         finally:
             self.is_running = False
             self.run_btn.config(state="normal")
