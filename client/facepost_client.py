@@ -16,19 +16,18 @@ from tkinter import messagebox, filedialog, ttk
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import WebDriverException
 
-# ================== CONFIG GLOBALA ==================
+# ================== CONFIG GLOBALĂ ==================
 
 APP_NAME = "Facepost"
-API_URL = "https://facepost.onrender.com"   # serverul tău Render
+API_URL = "https://facepost.onrender.com"   # serverul tău
 CONFIG_FILE = Path.home() / ".facepost_config.json"
 CHROMEDRIVER_NAME = "chromedriver.exe"     # în același folder cu EXE-ul
 
 UTC = timezone.utc
-
 
 DEFAULT_CONFIG = {
     "email": "",
@@ -48,9 +47,7 @@ DEFAULT_CONFIG = {
 
 
 def stable_fingerprint() -> str:
-    """
-    Fingerprint stabil pentru device (hash din câteva info de sistem).
-    """
+    """Fingerprint stabil pentru device (hash din info de sistem)."""
     raw = f"{platform.node()}|{platform.system()}|{platform.machine()}|{platform.version()}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
@@ -68,14 +65,17 @@ def load_config() -> dict:
     cfg = DEFAULT_CONFIG.copy()
     cfg.update(data)
 
+    # device_id stabil
     if not cfg.get("device_id"):
         cfg["device_id"] = stable_fingerprint()
 
+    # director profil Chrome
     if not cfg.get("chrome_profile_dir"):
         base = Path.home() / ".facepost_chrome_profile"
         base.mkdir(parents=True, exist_ok=True)
         cfg["chrome_profile_dir"] = str(base)
 
+    # migrare setări vechi de schedule (dacă există)
     if cfg.get("schedule_enabled") and not (
         cfg.get("schedule_enabled_morning") or cfg.get("schedule_enabled_evening")
     ):
@@ -94,11 +94,11 @@ def save_config(cfg: dict) -> None:
 
 
 CONFIG = load_config()
-# forțăm server_url să fie mereu API_URL (nu se poate schimba din UI / config)
+# forțăm mereu același server URL (nu se poate modifica din UI)
 CONFIG["server_url"] = API_URL
 
 
-# ================== API LICENTE ==================
+# ================== API LICENȚE & LOGS ==================
 
 def api_post(path: str, payload: dict) -> dict:
     url = f"{CONFIG.get('server_url', API_URL).rstrip('/')}{path}"
@@ -146,7 +146,7 @@ def log_run(groups, text: str, images):
     return api_post("/log_run", payload)
 
 
-# ================== SELENIUM: CHROME DRIVER ==================
+# ================== SELENIUM / CHROMEDRIVER ==================
 
 def get_chromedriver_path() -> str:
     """
@@ -177,6 +177,33 @@ def create_driver() -> webdriver.Chrome:
     return driver
 
 
+# ================== CONFIGURARE LOGIN FACEBOOK ==================
+
+def configure_facebook_login(parent: tk.Tk | None = None):
+    """
+    Deschide Chrome cu profilul Facepost și lasă userul să se logheze manual pe Facebook.
+    Se folosește o singură dată, apoi rămâne logat în profil.
+    """
+    try:
+        driver = create_driver()
+    except WebDriverException as e:
+        messagebox.showerror(
+            APP_NAME,
+            f"Nu pot porni Chrome.\nVerifică dacă {CHROMEDRIVER_NAME} este lângă Facepost.exe.\n\n{e}",
+            parent=parent,
+        )
+        return
+
+    driver.get("https://www.facebook.com/")
+    messagebox.showinfo(
+        APP_NAME,
+        "S-a deschis un Chrome cu profilul Facepost.\n"
+        "Loghează-te în Facebook, apoi închide fereastra.\n\n"
+        "După aceea, Facepost va folosi acest profil pentru postări.",
+        parent=parent,
+    )
+
+
 def wait_for_facebook_home(driver, timeout=60):
     WebDriverWait(driver, timeout).until(
         EC.presence_of_element_located((By.TAG_NAME, "body"))
@@ -186,7 +213,7 @@ def wait_for_facebook_home(driver, timeout=60):
 def open_group_and_post(driver, group_url: str, text: str, images, simulate: bool = False):
     """
     Deschide un link de grup și postează textul + pozele.
-    (Aici rămâne logica ta existentă de automatizare; placeholder.)
+    (Aici rămâne logica ta existentă de automatizare; momentan e placeholder.)
     """
     print(
         f"[DEBUG] Ar posta în {group_url} cu text de {len(text)} caractere și {len(images)} imagini. simulate={simulate}"
@@ -194,7 +221,7 @@ def open_group_and_post(driver, group_url: str, text: str, images, simulate: boo
     time.sleep(1)
 
 
-def run_posting(groups: list[str], text: str, images, delay: int, simulate: bool = False):
+def run_posting(groups, text: str, images, delay: int, simulate: bool = False):
     """
     Rulează efectiv postarea în toate grupurile, cu delay între ele.
     """
@@ -221,7 +248,7 @@ def run_posting(groups: list[str], text: str, images, delay: int, simulate: bool
 
 # ================== SCHEDULER ==================
 
-def parse_time_str(s: str) -> dtime | None:
+def parse_time_str(s: str):
     s = (s or "").strip()
     if not s:
         return None
@@ -232,7 +259,7 @@ def parse_time_str(s: str) -> dtime | None:
         return None
 
 
-def next_run_time_for(config: dict, which: str) -> datetime | None:
+def next_run_time_for(config: dict, which: str):
     enabled = config.get(f"schedule_enabled_{which}", False)
     if not enabled:
         return None
@@ -247,7 +274,7 @@ def next_run_time_for(config: dict, which: str) -> datetime | None:
     return candidate
 
 
-def compute_next_schedule_run(config: dict) -> datetime | None:
+def compute_next_schedule_run(config: dict):
     times = []
     for w in ("morning", "evening"):
         nt = next_run_time_for(config, w)
@@ -299,7 +326,7 @@ class FacepostApp:
         self.root = root
         self.root.title(APP_NAME)
         self.is_running = False
-        self.images = set()
+        self.images = set(CONFIG.get("images", []))
         self.scheduler_thread = None
 
         self.email_var = tk.StringVar(value=CONFIG.get("email", ""))
@@ -330,7 +357,7 @@ class FacepostApp:
         main_frame = tk.Frame(root)
         main_frame.pack(fill="both", expand=True, padx=10, pady=10)
 
-        # Config bar (fara Server URL)
+        # Config licență (sus) + buton Facebook login
         config_frame = tk.LabelFrame(main_frame, text="Config licență")
         config_frame.pack(fill="x", pady=5)
 
@@ -343,6 +370,12 @@ class FacepostApp:
             config_frame, text="Salvează config", command=self.save_config_clicked
         ).grid(row=0, column=2, padx=5)
 
+        tk.Button(
+            config_frame,
+            text="Configurează login Facebook",
+            command=lambda: configure_facebook_login(self.root),
+        ).grid(row=0, column=3, padx=5)
+
         self.license_status_var = tk.StringVar(value="Status licență necunoscut.")
         tk.Button(
             config_frame, text="Check licență", command=self.check_license_clicked
@@ -351,9 +384,10 @@ class FacepostApp:
             config_frame, text="Bind licență", command=self.bind_license_clicked
         ).grid(row=1, column=1, pady=5)
         tk.Label(config_frame, textvariable=self.license_status_var, fg="blue").grid(
-            row=1, column=2, sticky="w"
+            row=1, column=2, columnspan=2, sticky="w"
         )
 
+        # Conținut postare
         post_frame = tk.LabelFrame(main_frame, text="Conținut postare")
         post_frame.pack(fill="both", expand=True, pady=5)
 
@@ -390,6 +424,7 @@ class FacepostApp:
             variable=self.simulate_var,
         ).pack(side="left", padx=10)
 
+        # Programare automată
         schedule_frame = tk.LabelFrame(main_frame, text="Programare automată")
         schedule_frame.pack(fill="x", pady=5)
 
@@ -413,6 +448,7 @@ class FacepostApp:
             schedule_frame, textvariable=self.schedule_time_evening_var, width=6
         ).grid(row=1, column=1, sticky="w")
 
+        # Bottom bar
         bottom_frame = tk.Frame(main_frame)
         bottom_frame.pack(fill="x", pady=10)
 
@@ -433,7 +469,6 @@ class FacepostApp:
         self.group_text.delete("1.0", "end")
         self.group_text.insert("1.0", CONFIG.get("groups_text", ""))
 
-        self.images = set(CONFIG.get("images", []))
         self.images_listbox.delete(0, "end")
         for img in self.images:
             self.images_listbox.insert("end", img)
@@ -526,10 +561,7 @@ class FacepostApp:
         paths = filedialog.askopenfilenames(
             title="Alege imagini",
             filetypes=[
-                (
-                    "Imagini",
-                    "*.png;*.jpg;*.jpeg;*.gif;*.bmp;*.webp",
-                ),
+                ("Imagini", "*.png;*.jpg;*.jpeg;*.gif;*.bmp;*.webp"),
                 ("Toate fișierele", "*.*"),
             ],
         )
@@ -635,21 +667,19 @@ class FacepostApp:
         self.run_btn.config(state="disabled")
         self.status_var.set("Rulez postările...")
         try:
-            # trimitem log către server (best-effort; nu blocăm rularea dacă apare o eroare)
+            # log către server (best-effort)
             try:
                 resp = log_run(groups, text, images)
                 print("[LOG_RUN]", resp)
             except Exception as e:
                 print("[WARN] Nu pot trimite log_run:", e)
 
-            # apoi rulăm efectiv postările
+            # rulare efectivă
             run_posting(groups, text, images, delay, simulate=simulate)
             if simulate:
                 self.status_var.set("Gata (simulare).")
             else:
-                self.status_var.set(
-                    "Gata – postările ar trebui să fie publicate."
-                )
+                self.status_var.set("Gata – postările ar trebui să fie publicate.")
         finally:
             self.is_running = False
             self.run_btn.config(state="normal")
