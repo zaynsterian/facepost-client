@@ -94,6 +94,8 @@ def save_config(cfg: dict) -> None:
 
 
 CONFIG = load_config()
+# forțăm server_url să fie mereu API_URL (nu se poate schimba din UI / config)
+CONFIG["server_url"] = API_URL
 
 
 # ================== API LICENTE ==================
@@ -301,7 +303,6 @@ class FacepostApp:
         self.scheduler_thread = None
 
         self.email_var = tk.StringVar(value=CONFIG.get("email", ""))
-        self.server_url_var = tk.StringVar(value=CONFIG.get("server_url", API_URL))
         self.delay_var = tk.StringVar(value=str(CONFIG.get("delay_seconds", 120)))
         self.simulate_var = tk.BooleanVar(value=CONFIG.get("simulate", False))
 
@@ -329,7 +330,8 @@ class FacepostApp:
         main_frame = tk.Frame(root)
         main_frame.pack(fill="both", expand=True, padx=10, pady=10)
 
-        config_frame = tk.LabelFrame(main_frame, text="Config licență & server")
+        # Config bar (fara Server URL)
+        config_frame = tk.LabelFrame(main_frame, text="Config licență")
         config_frame.pack(fill="x", pady=5)
 
         tk.Label(config_frame, text="Email licență:").grid(row=0, column=0, sticky="w")
@@ -337,14 +339,9 @@ class FacepostApp:
             row=0, column=1, sticky="w"
         )
 
-        tk.Label(config_frame, text="Server URL:").grid(row=0, column=2, sticky="w")
-        tk.Entry(config_frame, textvariable=self.server_url_var, width=40).grid(
-            row=0, column=3, sticky="w"
-        )
-
         tk.Button(
             config_frame, text="Salvează config", command=self.save_config_clicked
-        ).grid(row=0, column=4, padx=5)
+        ).grid(row=0, column=2, padx=5)
 
         self.license_status_var = tk.StringVar(value="Status licență necunoscut.")
         tk.Button(
@@ -354,7 +351,7 @@ class FacepostApp:
             config_frame, text="Bind licență", command=self.bind_license_clicked
         ).grid(row=1, column=1, pady=5)
         tk.Label(config_frame, textvariable=self.license_status_var, fg="blue").grid(
-            row=1, column=2, columnspan=3, sticky="w"
+            row=1, column=2, sticky="w"
         )
 
         post_frame = tk.LabelFrame(main_frame, text="Conținut postare")
@@ -452,7 +449,6 @@ class FacepostApp:
 
     def save_config_clicked(self):
         CONFIG["email"] = self.email_var.get().strip()
-        CONFIG["server_url"] = self.server_url_var.get().strip()
         CONFIG["post_text"] = self.post_text.get("1.0", "end").strip()
         CONFIG["groups_text"] = self.group_text.get("1.0", "end").strip()
         CONFIG["images"] = list(self.images)
@@ -482,7 +478,6 @@ class FacepostApp:
             )
             return
         CONFIG["email"] = email
-        CONFIG["server_url"] = self.server_url_var.get().strip()
         save_config(CONFIG)
 
         resp = check_license(email, CONFIG.get("device_id"))
@@ -512,7 +507,6 @@ class FacepostApp:
             )
             return
         CONFIG["email"] = email
-        CONFIG["server_url"] = self.server_url_var.get().strip()
         save_config(CONFIG)
 
         resp = bind_license(email, CONFIG.get("device_id"))
@@ -589,7 +583,6 @@ class FacepostApp:
             return
 
         CONFIG["email"] = email
-        CONFIG["server_url"] = self.server_url_var.get().strip()
         save_config(CONFIG)
 
         resp = check_license(email, CONFIG.get("device_id"))
