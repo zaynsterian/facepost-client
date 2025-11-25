@@ -2,7 +2,6 @@ import os
 import sys
 import json
 import time
-import uuid
 import threading
 import hashlib
 from pathlib import Path
@@ -11,19 +10,19 @@ import platform
 
 import requests
 import tkinter as tk
-from tkinter import messagebox, filedialog, ttk
+from tkinter import messagebox, filedialog
 
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.by import By
 from selenium.common.exceptions import WebDriverException
 
 # ================== CONFIG GLOBALĂ ==================
 
 APP_NAME = "Facepost"
-API_URL = "https://facepost.onrender.com"   # serverul tău
+API_URL = "https://facepost.onrender.com"
 CONFIG_FILE = Path.home() / ".facepost_config.json"
 CHROMEDRIVER_NAME = "chromedriver.exe"     # în același folder cu EXE-ul
 
@@ -38,6 +37,8 @@ DEFAULT_CONFIG = {
     "schedule_time_morning": "08:00",
     "schedule_enabled_evening": False,
     "schedule_time_evening": "20:00",
+    "interval_enabled": False,
+    "interval_minutes": 60,
     "post_text": "",
     "groups_text": "",
     "images": [],
@@ -46,13 +47,15 @@ DEFAULT_CONFIG = {
 }
 
 
-def stable_fingerprint() -> str:
+# ================== CONFIG HELPERI ==================
+
+def stable_fingerprint():
     """Fingerprint stabil pentru device (hash din info de sistem)."""
     raw = f"{platform.node()}|{platform.system()}|{platform.machine()}|{platform.version()}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
-def load_config() -> dict:
+def load_config():
     if CONFIG_FILE.exists():
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -85,7 +88,7 @@ def load_config() -> dict:
     return cfg
 
 
-def save_config(cfg: dict) -> None:
+def save_config(cfg):
     try:
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(cfg, f, ensure_ascii=False, indent=2)
@@ -100,7 +103,7 @@ CONFIG["server_url"] = API_URL
 
 # ================== API LICENȚE & LOGS ==================
 
-def api_post(path: str, payload: dict) -> dict:
+def api_post(path, payload):
     url = f"{CONFIG.get('server_url', API_URL).rstrip('/')}{path}"
     try:
         r = requests.post(url, json=payload, timeout=15)
@@ -114,17 +117,17 @@ def api_post(path: str, payload: dict) -> dict:
         return {"error": str(e), "_http": 0}
 
 
-def bind_license(email: str, fingerprint: str) -> dict:
+def bind_license(email, fingerprint):
     """Leagă device-ul de licență: POST /bind"""
     return api_post("/bind", {"email": email, "fingerprint": fingerprint})
 
 
-def check_license(email: str, fingerprint: str) -> dict:
+def check_license(email, fingerprint):
     """Verifică licența pentru device: POST /check"""
     return api_post("/check", {"email": email, "fingerprint": fingerprint})
 
 
-def log_run(groups, text: str, images):
+def log_run(groups, text, images):
     """
     Trimite către server un log simplu pentru fiecare RUN:
     - email, fingerprint, group_urls, post_text, images_count
@@ -148,7 +151,7 @@ def log_run(groups, text: str, images):
 
 # ================== SELENIUM / CHROMEDRIVER ==================
 
-def get_chromedriver_path() -> str:
+def get_chromedriver_path():
     """
     Caută chromedriver.exe:
     - în același folder cu executabilul (Facepost.exe)
@@ -162,7 +165,7 @@ def get_chromedriver_path() -> str:
     return str(candidate)
 
 
-def create_driver() -> webdriver.Chrome:
+def create_driver():
     """Pornește Chrome cu profilul dedicat Facepost."""
     chrome_opts = webdriver.ChromeOptions()
     profile_dir = CONFIG.get("chrome_profile_dir")
@@ -179,7 +182,7 @@ def create_driver() -> webdriver.Chrome:
 
 # ================== CONFIGURARE LOGIN FACEBOOK ==================
 
-def configure_facebook_login(parent: tk.Tk | None = None):
+def configure_facebook_login(parent=None):
     """
     Deschide Chrome cu profilul Facepost și lasă userul să se logheze manual pe Facebook.
     Se folosește o singură dată, apoi rămâne logat în profil.
@@ -210,10 +213,11 @@ def wait_for_facebook_home(driver, timeout=60):
     )
 
 
-def open_group_and_post(driver, group_url: str, text: str, images, simulate: bool = False):
+def open_group_and_post(driver, group_url, text, images, simulate=False):
     """
     Deschide un link de grup și postează textul + pozele.
-    (Aici rămâne logica ta existentă de automatizare; momentan e placeholder.)
+    Aici poți pune logica ta reală de postare.
+    Momentan doar face un sleep și un print.
     """
     print(
         f"[DEBUG] Ar posta în {group_url} cu text de {len(text)} caractere și {len(images)} imagini. simulate={simulate}"
@@ -221,7 +225,7 @@ def open_group_and_post(driver, group_url: str, text: str, images, simulate: boo
     time.sleep(1)
 
 
-def run_posting(groups, text: str, images, delay: int, simulate: bool = False):
+def run_posting(groups, text, images, delay, simulate=False):
     """
     Rulează efectiv postarea în toate grupurile, cu delay între ele.
     """
@@ -248,7 +252,7 @@ def run_posting(groups, text: str, images, delay: int, simulate: bool = False):
 
 # ================== SCHEDULER ==================
 
-def parse_time_str(s: str):
+def parse_time_str(s):
     s = (s or "").strip()
     if not s:
         return None
@@ -259,7 +263,7 @@ def parse_time_str(s: str):
         return None
 
 
-def next_run_time_for(config: dict, which: str):
+def next_run_time_for(config, which):
     enabled = config.get(f"schedule_enabled_{which}", False)
     if not enabled:
         return None
@@ -274,7 +278,7 @@ def next_run_time_for(config: dict, which: str):
     return candidate
 
 
-def compute_next_schedule_run(config: dict):
+def compute_next_schedule_run(config):
     times = []
     for w in ("morning", "evening"):
         nt = next_run_time_for(config, w)
@@ -288,12 +292,16 @@ def compute_next_schedule_run(config: dict):
 class SchedulerThread(threading.Thread):
     """
     Thread care verifică periodic dacă e momentul să ruleze postarea programată.
+    Gestionează atât:
+      - rundele fixe (dimineață/seară)
+      - cât și rundele repetitive (din X în X minute)
     """
 
     def __init__(self, app):
         super().__init__(daemon=True)
         self.app = app
         self._stop_flag = threading.Event()
+        self.last_interval_run = None
 
     def stop(self):
         self._stop_flag.set()
@@ -301,19 +309,42 @@ class SchedulerThread(threading.Thread):
     def run(self):
         while not self._stop_flag.is_set():
             try:
-                cfg = CONFIG
-                next_run = compute_next_schedule_run(cfg)
-                if not next_run:
-                    time.sleep(5)
-                    continue
-
                 now = datetime.now()
-                if now >= next_run:
-                    print("[SCHEDULER] E timpul pentru run programat.")
+                cfg = CONFIG
+
+                # 1) schedule clasic dimineață/seară
+                next_fixed = compute_next_schedule_run(cfg)
+                if next_fixed and now >= next_fixed and not self.app.is_running:
+                    print("[SCHEDULER] Rulez rundă programată (dimineață/seară).")
                     self.app.run_now(simulate=False, from_scheduler=True)
                     time.sleep(60)
-                else:
-                    time.sleep(5)
+                    continue
+
+                # 2) schedule repetitiv (din X în X minute)
+                if cfg.get("interval_enabled"):
+                    try:
+                        minutes = int(cfg.get("interval_minutes") or 0)
+                    except ValueError:
+                        minutes = 0
+
+                    # minim 5 minute ca protecție
+                    if minutes < 5:
+                        minutes = 5
+
+                    should_run = False
+                    if self.last_interval_run is None:
+                        should_run = True
+                    else:
+                        delta_sec = (now - self.last_interval_run).total_seconds()
+                        if delta_sec >= minutes * 60:
+                            should_run = True
+
+                    if should_run and not self.app.is_running:
+                        print("[SCHEDULER] Rulez rundă repetitivă.")
+                        self.app.run_now(simulate=False, from_scheduler=True)
+                        self.last_interval_run = datetime.now()
+
+                time.sleep(5)
             except Exception as e:
                 print("[SCHEDULER ERROR]", e)
                 time.sleep(10)
@@ -322,7 +353,7 @@ class SchedulerThread(threading.Thread):
 # ================== TKINTER UI ==================
 
 class FacepostApp:
-    def __init__(self, root: tk.Tk):
+    def __init__(self, root):
         self.root = root
         self.root.title(APP_NAME)
         self.is_running = False
@@ -346,13 +377,22 @@ class FacepostApp:
             value=CONFIG.get("schedule_time_evening", "20:00")
         )
 
+        self.interval_enabled_var = tk.BooleanVar(
+            value=CONFIG.get("interval_enabled", False)
+        )
+        self.interval_minutes_var = tk.StringVar(
+            value=str(CONFIG.get("interval_minutes", 60))
+        )
+
         self._build_ui()
         self._load_initial_texts()
         self._start_scheduler_if_needed()
 
+    # ---------- UI building ----------
+
     def _build_ui(self):
         root = self.root
-        root.geometry("900x700")
+        root.geometry("900x720")
 
         main_frame = tk.Frame(root)
         main_frame.pack(fill="both", expand=True, padx=10, pady=10)
@@ -424,8 +464,8 @@ class FacepostApp:
             variable=self.simulate_var,
         ).pack(side="left", padx=10)
 
-        # Programare automată
-        schedule_frame = tk.LabelFrame(main_frame, text="Programare automată")
+        # Programare automată zilnică
+        schedule_frame = tk.LabelFrame(main_frame, text="Programare automată zilnică")
         schedule_frame.pack(fill="x", pady=5)
 
         tk.Checkbutton(
@@ -448,6 +488,39 @@ class FacepostApp:
             schedule_frame, textvariable=self.schedule_time_evening_var, width=6
         ).grid(row=1, column=1, sticky="w")
 
+        # Programare repetitivă
+        interval_frame = tk.LabelFrame(main_frame, text="Programare repetitivă")
+        interval_frame.pack(fill="x", pady=5)
+
+        tk.Checkbutton(
+            interval_frame,
+            text="Rulează la fiecare:",
+            variable=self.interval_enabled_var,
+            command=self.schedule_changed,
+        ).grid(row=0, column=0, sticky="w")
+
+        tk.Entry(
+            interval_frame,
+            textvariable=self.interval_minutes_var,
+            width=6
+        ).grid(row=0, column=1, sticky="w")
+
+        tk.Label(interval_frame, text="minute").grid(row=0, column=2, sticky="w")
+
+        self.interval_button = tk.Button(
+            interval_frame,
+            text="Start",
+            command=self.toggle_interval,
+            width=8
+        )
+        self.interval_button.grid(row=0, column=3, padx=8, sticky="w")
+
+        tk.Label(
+            interval_frame,
+            text="(rulări repetate până apeși Stop sau închizi aplicația)",
+            fg="gray"
+        ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(3, 0))
+
         # Bottom bar
         bottom_frame = tk.Frame(main_frame)
         bottom_frame.pack(fill="x", pady=10)
@@ -461,6 +534,10 @@ class FacepostApp:
             bottom_frame, text="Rulează acum", command=self.run_now_clicked
         )
         self.run_btn.pack(side="right")
+
+        self._update_interval_button_text()
+
+    # ---------- helperi UI ----------
 
     def _load_initial_texts(self):
         self.post_text.delete("1.0", "end")
@@ -476,11 +553,27 @@ class FacepostApp:
     def _start_scheduler_if_needed(self):
         if self.scheduler_thread is not None:
             return
-        if CONFIG.get("schedule_enabled_morning") or CONFIG.get(
-            "schedule_enabled_evening"
+        if (
+            CONFIG.get("schedule_enabled_morning")
+            or CONFIG.get("schedule_enabled_evening")
+            or CONFIG.get("interval_enabled")
         ):
             self.scheduler_thread = SchedulerThread(self)
             self.scheduler_thread.start()
+
+    def _update_interval_button_text(self):
+        if self.interval_enabled_var.get():
+            self.interval_button.config(text="Stop")
+        else:
+            self.interval_button.config(text="Start")
+
+    def toggle_interval(self):
+        current = self.interval_enabled_var.get()
+        self.interval_enabled_var.set(not current)
+        self._update_interval_button_text()
+        self.schedule_changed()
+
+    # ---------- acțiuni config & schedule ----------
 
     def save_config_clicked(self):
         CONFIG["email"] = self.email_var.get().strip()
@@ -502,8 +595,38 @@ class FacepostApp:
         )
         CONFIG["schedule_time_evening"] = self.schedule_time_evening_var.get().strip()
 
+        try:
+            interval_minutes = int(self.interval_minutes_var.get() or "0")
+        except ValueError:
+            interval_minutes = 0
+        CONFIG["interval_enabled"] = bool(self.interval_enabled_var.get())
+        CONFIG["interval_minutes"] = interval_minutes
+
         save_config(CONFIG)
         messagebox.showinfo(APP_NAME, "Config salvată.", parent=self.root)
+
+    def schedule_changed(self):
+        CONFIG["schedule_enabled_morning"] = bool(
+            self.schedule_enabled_morning_var.get()
+        )
+        CONFIG["schedule_time_morning"] = self.schedule_time_morning_var.get().strip()
+        CONFIG["schedule_enabled_evening"] = bool(
+            self.schedule_enabled_evening_var.get()
+        )
+        CONFIG["schedule_time_evening"] = self.schedule_time_evening_var.get().strip()
+
+        try:
+            interval_minutes = int(self.interval_minutes_var.get() or "0")
+        except ValueError:
+            interval_minutes = 0
+        CONFIG["interval_enabled"] = bool(self.interval_enabled_var.get())
+        CONFIG["interval_minutes"] = interval_minutes
+
+        save_config(CONFIG)
+        self._update_interval_button_text()
+        self._start_scheduler_if_needed()
+
+    # ---------- acțiuni licență ----------
 
     def check_license_clicked(self):
         email = self.email_var.get().strip().lower()
@@ -557,6 +680,8 @@ class FacepostApp:
 
         self.license_status_var.set("Licență legată cu succes pe acest device.")
 
+    # ---------- acțiuni imagini ----------
+
     def add_images_clicked(self):
         paths = filedialog.askopenfilenames(
             title="Alege imagini",
@@ -582,36 +707,25 @@ class FacepostApp:
             if val in self.images:
                 self.images.remove(val)
 
-    def schedule_changed(self):
-        CONFIG["schedule_enabled_morning"] = bool(
-            self.schedule_enabled_morning_var.get()
-        )
-        CONFIG["schedule_time_morning"] = self.schedule_time_morning_var.get().strip()
-        CONFIG["schedule_enabled_evening"] = bool(
-            self.schedule_enabled_evening_var.get()
-        )
-        CONFIG["schedule_time_evening"] = self.schedule_time_evening_var.get().strip()
-        save_config(CONFIG)
-        if not self.scheduler_thread and (
-            CONFIG.get("schedule_enabled_morning")
-            or CONFIG.get("schedule_enabled_evening")
-        ):
-            self._start_scheduler_if_needed()
+    # ---------- run logic ----------
 
-    def run_now(self, simulate: bool | None = None, from_scheduler: bool = False):
+    def run_now(self, simulate=None, from_scheduler=False):
         if self.is_running:
-            messagebox.showwarning(
-                APP_NAME,
-                "Deja rulează o sesiune de postare.",
-                parent=self.root,
-            )
+            # când e chemat din scheduler, doar ignorăm dacă rulează deja
+            if not from_scheduler:
+                messagebox.showwarning(
+                    APP_NAME,
+                    "Deja rulează o sesiune de postare.",
+                    parent=self.root,
+                )
             return
 
         email = self.email_var.get().strip().lower()
         if not email:
-            messagebox.showerror(
-                APP_NAME, "Te rog introdu emailul licenței.", parent=self.root
-            )
+            if not from_scheduler:
+                messagebox.showerror(
+                    APP_NAME, "Te rog introdu emailul licenței.", parent=self.root
+                )
             return
 
         CONFIG["email"] = email
@@ -619,28 +733,31 @@ class FacepostApp:
 
         resp = check_license(email, CONFIG.get("device_id"))
         if resp.get("error"):
-            messagebox.showerror(
-                APP_NAME,
-                f"Eroare la check licență: {resp['error']}",
-                parent=self.root,
-            )
+            if not from_scheduler:
+                messagebox.showerror(
+                    APP_NAME,
+                    f"Eroare la check licență: {resp['error']}",
+                    parent=self.root,
+                )
             return
         if resp.get("status") not in ("ok",):
-            messagebox.showerror(
-                APP_NAME,
-                f"Licența nu este activă sau este expirată ({resp.get('status')}).",
-                parent=self.root,
-            )
+            if not from_scheduler:
+                messagebox.showerror(
+                    APP_NAME,
+                    f"Licența nu este activă sau este expirată ({resp.get('status')}).",
+                    parent=self.root,
+                )
             return
 
         groups_raw = self.group_text.get("1.0", "end").strip()
         groups = [g for g in groups_raw.splitlines() if g.strip()]
         if not groups:
-            messagebox.showerror(
-                APP_NAME,
-                "Te rog introdu cel puțin un URL de grup.",
-                parent=self.root,
-            )
+            if not from_scheduler:
+                messagebox.showerror(
+                    APP_NAME,
+                    "Te rog introdu cel puțin un URL de grup.",
+                    parent=self.root,
+                )
             return
 
         text = self.post_text.get("1.0", "end").strip()
@@ -664,7 +781,10 @@ class FacepostApp:
 
     def _run_thread(self, groups, text, images, delay, simulate):
         self.is_running = True
-        self.run_btn.config(state="disabled")
+        try:
+            self.run_btn.config(state="disabled")
+        except Exception:
+            pass
         self.status_var.set("Rulez postările...")
         try:
             # log către server (best-effort)
@@ -682,7 +802,10 @@ class FacepostApp:
                 self.status_var.set("Gata – postările ar trebui să fie publicate.")
         finally:
             self.is_running = False
-            self.run_btn.config(state="normal")
+            try:
+                self.run_btn.config(state="normal")
+            except Exception:
+                pass
 
 
 # ================== MAIN ==================
