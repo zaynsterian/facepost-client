@@ -24,7 +24,7 @@ from selenium.common.exceptions import WebDriverException
 APP_NAME = "Facepost"
 API_URL = "https://facepost.onrender.com"
 CONFIG_FILE = Path.home() / ".facepost_config.json"
-CHROMEDRIVER_NAME = "chromedriver.exe"     # în același folder cu EXE-ul
+CHROMEDRIVER_NAME = "chromedriver.exe"  # în același folder cu EXE-ul
 
 UTC = timezone.utc
 
@@ -49,13 +49,13 @@ DEFAULT_CONFIG = {
 
 # ================== CONFIG HELPERI ==================
 
-def stable_fingerprint():
+def stable_fingerprint() -> str:
     """Fingerprint stabil pentru device (hash din info de sistem)."""
     raw = f"{platform.node()}|{platform.system()}|{platform.machine()}|{platform.version()}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
-def load_config():
+def load_config() -> dict:
     if CONFIG_FILE.exists():
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -88,7 +88,7 @@ def load_config():
     return cfg
 
 
-def save_config(cfg):
+def save_config(cfg: dict) -> None:
     try:
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(cfg, f, ensure_ascii=False, indent=2)
@@ -103,7 +103,7 @@ CONFIG["server_url"] = API_URL
 
 # ================== API LICENȚE & LOGS ==================
 
-def api_post(path, payload):
+def api_post(path: str, payload: dict) -> dict:
     url = f"{CONFIG.get('server_url', API_URL).rstrip('/')}{path}"
     try:
         r = requests.post(url, json=payload, timeout=15)
@@ -117,17 +117,17 @@ def api_post(path, payload):
         return {"error": str(e), "_http": 0}
 
 
-def bind_license(email, fingerprint):
+def bind_license(email: str, fingerprint: str) -> dict:
     """Leagă device-ul de licență: POST /bind"""
     return api_post("/bind", {"email": email, "fingerprint": fingerprint})
 
 
-def check_license(email, fingerprint):
+def check_license(email: str, fingerprint: str) -> dict:
     """Verifică licența pentru device: POST /check"""
     return api_post("/check", {"email": email, "fingerprint": fingerprint})
 
 
-def log_run(groups, text, images):
+def log_run(groups, text: str, images):
     """
     Trimite către server un log simplu pentru fiecare RUN:
     - email, fingerprint, group_urls, post_text, images_count
@@ -151,7 +151,7 @@ def log_run(groups, text, images):
 
 # ================== SELENIUM / CHROMEDRIVER ==================
 
-def get_chromedriver_path():
+def get_chromedriver_path() -> str:
     """
     Caută chromedriver.exe:
     - în același folder cu executabilul (Facepost.exe)
@@ -165,7 +165,7 @@ def get_chromedriver_path():
     return str(candidate)
 
 
-def create_driver():
+def create_driver() -> webdriver.Chrome:
     """Pornește Chrome cu profilul dedicat Facepost."""
     chrome_opts = webdriver.ChromeOptions()
     profile_dir = CONFIG.get("chrome_profile_dir")
@@ -182,7 +182,7 @@ def create_driver():
 
 # ================== CONFIGURARE LOGIN FACEBOOK ==================
 
-def configure_facebook_login(parent=None):
+def configure_facebook_login(parent: tk.Tk | None = None):
     """
     Deschide Chrome cu profilul Facepost și lasă userul să se logheze manual pe Facebook.
     Se folosește o singură dată, apoi rămâne logat în profil.
@@ -192,7 +192,8 @@ def configure_facebook_login(parent=None):
     except WebDriverException as e:
         messagebox.showerror(
             APP_NAME,
-            f"Nu pot porni Chrome.\nVerifică dacă {CHROMEDRIVER_NAME} este lângă Facepost.exe.\n\n{e}",
+            f"Nu pot porni Chrome.\n"
+            f"Verifică dacă {CHROMEDRIVER_NAME} este lângă Facepost.exe.\n\n{e}",
             parent=parent,
         )
         return
@@ -207,32 +208,137 @@ def configure_facebook_login(parent=None):
     )
 
 
-def wait_for_facebook_home(driver, timeout=60):
+def wait_for_facebook_home(driver: webdriver.Chrome, timeout: int = 60):
     WebDriverWait(driver, timeout).until(
         EC.presence_of_element_located((By.TAG_NAME, "body"))
     )
 
 
-def open_group_and_post(driver, group_url, text, images, simulate=False):
+# ================== LOGICA DE POSTARE ==================
+
+def open_group_and_post(driver: webdriver.Chrome,
+                        group_url: str,
+                        text: str,
+                        images,
+                        simulate: bool = False) -> None:
     """
-    Deschide un link de grup și postează textul + pozele.
-    Aici poți pune logica ta reală de postare.
-    Momentan doar face un sleep și un print.
+    Deschide un link de grup și postează textul + imaginile.
+
+    Atenție: Facebook schimbă des UI-ul, deci selectorii pot avea nevoie
+    de ajustări dacă ceva nu mai merge.
     """
-    print(
-        f"[DEBUG] Ar posta în {group_url} cu text de {len(text)} caractere și {len(images)} imagini. simulate={simulate}"
-    )
-    time.sleep(1)
+    try:
+        print(f"[DEBUG] Navighez la {group_url}")
+        driver.get(group_url)
+
+        # așteptăm încărcarea paginii grupului
+        wait_for_facebook_home(driver, timeout=60)
+
+        if simulate:
+            print("[DEBUG] Simulare activă – nu postez efectiv.")
+            return
+
+        # 1. Deschide composer-ul de postare ("Scrie o postare", "Create post", etc.)
+        try:
+            create_btn = WebDriverWait(driver, 30).until(
+                EC.element_to_be_clickable((
+                    By.XPATH,
+                    "//div[@role='button' and "
+                    "      (descendant::span[contains(text(), 'Scrie o postare')] "
+                    "    or descendant::span[contains(text(), 'Create post')] "
+                    "    or descendant::span[contains(text(), \"What's on your mind\")] "
+                    "    or descendant::span[contains(text(), 'Write something')] "
+                    "      )]"
+                ))
+            )
+            create_btn.click()
+            print("[DEBUG] Am deschis composer-ul de postare.")
+        except Exception as e:
+            print("[WARN] Nu am găsit butonul de creare postare:", e)
+            return
+
+        # 2. Introdu textul în textbox
+        try:
+            textbox = WebDriverWait(driver, 30).until(
+                EC.element_to_be_clickable((By.XPATH, "//div[@role='textbox']"))
+            )
+            textbox.click()
+            if text:
+                textbox.send_keys(text)
+            print("[DEBUG] Am introdus textul în postare.")
+        except Exception as e:
+            print("[WARN] Nu pot scrie textul postării:", e)
+
+        # 3. Încarcă imaginile (dacă există)
+        for img_path in images or []:
+            abs_path = os.path.abspath(img_path)
+            try:
+                # input-ul pentru imagini este de tip file și de obicei e ascuns
+                # încercăm mai întâi să-l găsim direct
+                file_inputs = driver.find_elements(
+                    By.XPATH,
+                    "//input[@type='file' and contains(@accept, 'image')]",
+                )
+                file_input = file_inputs[0] if file_inputs else None
+
+                if file_input is None:
+                    # încercăm să apăsăm pe butonul Foto ca să apară input-ul
+                    try:
+                        photo_btn = driver.find_element(
+                            By.XPATH,
+                            "//div[@role='button' and "
+                            " (descendant::span[contains(text(), 'Foto')] or "
+                            "  descendant::span[contains(text(), 'Photo')])] "
+                        )
+                        photo_btn.click()
+                        time.sleep(1)
+                        file_inputs = driver.find_elements(
+                            By.XPATH,
+                            "//input[@type='file' and contains(@accept, 'image')]",
+                        )
+                        file_input = file_inputs[0] if file_inputs else None
+                    except Exception:
+                        file_input = None
+
+                if file_input is None:
+                    print("[WARN] Nu am găsit input-ul de fișier pentru imagini.")
+                    break
+
+                file_input.send_keys(abs_path)
+                print(f"[DEBUG] Am atașat imaginea: {abs_path}")
+                time.sleep(1.5)
+            except Exception as e:
+                print("[WARN] Nu pot atașa imaginea:", abs_path, e)
+                break
+
+        # 4. Apasă butonul de „Postare”
+        try:
+            post_btn = WebDriverWait(driver, 30).until(
+                EC.element_to_be_clickable((
+                    By.XPATH,
+                    "//div[@aria-label='Postează' or "
+                    "      @aria-label='Post' or "
+                    "      @aria-label='Trimite']"
+                ))
+            )
+            post_btn.click()
+            print("[DEBUG] Am apăsat butonul de postare.")
+            time.sleep(3)
+        except Exception as e:
+            print("[WARN] Nu am găsit butonul de Postare:", e)
+
+    except Exception as e:
+        print("[ERROR] Eroare în open_group_and_post pentru", group_url, ":", e)
 
 
-def run_posting(groups, text, images, delay, simulate=False):
+def run_posting(groups, text: str, images, delay: int, simulate: bool = False):
     """
     Rulează efectiv postarea în toate grupurile, cu delay între ele.
     """
     driver = None
     try:
         driver = create_driver()
-        wait_for_facebook_home(driver)
+        wait_for_facebook_home(driver, timeout=60)
 
         for idx, group in enumerate(groups, start=1):
             group = group.strip()
@@ -252,7 +358,7 @@ def run_posting(groups, text, images, delay, simulate=False):
 
 # ================== SCHEDULER ==================
 
-def parse_time_str(s):
+def parse_time_str(s: str):
     s = (s or "").strip()
     if not s:
         return None
@@ -263,7 +369,7 @@ def parse_time_str(s):
         return None
 
 
-def next_run_time_for(config, which):
+def next_run_time_for(config: dict, which: str):
     enabled = config.get(f"schedule_enabled_{which}", False)
     if not enabled:
         return None
@@ -278,7 +384,7 @@ def next_run_time_for(config, which):
     return candidate
 
 
-def compute_next_schedule_run(config):
+def compute_next_schedule_run(config: dict):
     times = []
     for w in ("morning", "evening"):
         nt = next_run_time_for(config, w)
@@ -297,11 +403,11 @@ class SchedulerThread(threading.Thread):
       - cât și rundele repetitive (din X în X minute)
     """
 
-    def __init__(self, app):
+    def __init__(self, app: "FacepostApp"):
         super().__init__(daemon=True)
         self.app = app
         self._stop_flag = threading.Event()
-        self.last_interval_run = None
+        self.last_interval_run: datetime | None = None
 
     def stop(self):
         self._stop_flag.set()
@@ -353,7 +459,7 @@ class SchedulerThread(threading.Thread):
 # ================== TKINTER UI ==================
 
 class FacepostApp:
-    def __init__(self, root):
+    def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title(APP_NAME)
         self.is_running = False
@@ -502,7 +608,7 @@ class FacepostApp:
         tk.Entry(
             interval_frame,
             textvariable=self.interval_minutes_var,
-            width=6
+            width=6,
         ).grid(row=0, column=1, sticky="w")
 
         tk.Label(interval_frame, text="minute").grid(row=0, column=2, sticky="w")
@@ -511,14 +617,14 @@ class FacepostApp:
             interval_frame,
             text="Start",
             command=self.toggle_interval,
-            width=8
+            width=8,
         )
         self.interval_button.grid(row=0, column=3, padx=8, sticky="w")
 
         tk.Label(
             interval_frame,
             text="(rulări repetate până apeși Stop sau închizi aplicația)",
-            fg="gray"
+            fg="gray",
         ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(3, 0))
 
         # Bottom bar
@@ -709,7 +815,7 @@ class FacepostApp:
 
     # ---------- run logic ----------
 
-    def run_now(self, simulate=None, from_scheduler=False):
+    def run_now(self, simulate: bool | None = None, from_scheduler: bool = False):
         if self.is_running:
             # când e chemat din scheduler, doar ignorăm dacă rulează deja
             if not from_scheduler:
