@@ -228,7 +228,7 @@ def open_group_and_post(driver: webdriver.Chrome,
     2. Găsește composer-ul folosind:
        - data-pagelet="GroupInlineComposer" + role="button"
        - texte RO/EN: "Scrie ceva", "Scrie acum", "Scrie o postare", "Create post", etc.
-    3. Dacă nu găsește buton, încearcă direct primul <div role="textbox">
+    3. Găsește textbox-ul din composer (nu din comentarii)
     4. Scrie textul, atașează imagini, apasă Postează.
     """
 
@@ -238,6 +238,9 @@ def open_group_and_post(driver: webdriver.Chrome,
             try:
                 el = WebDriverWait(driver, 10).until(
                     EC.element_to_be_clickable((By.XPATH, xp))
+                )
+                driver.execute_script(
+                    "arguments[0].scrollIntoView({block:'center'});", el
                 )
                 el.click()
                 print(f"[DEBUG] {log_prefix} click cu XPATH: {xp}")
@@ -317,6 +320,10 @@ def open_group_and_post(driver: webdriver.Chrome,
                         (By.XPATH, "(//div[@role='textbox'])[1]")
                     )
                 )
+                driver.execute_script(
+                    "arguments[0].scrollIntoView({block:'center'});",
+                    textbox_fallback,
+                )
                 textbox_fallback.click()
                 print("[DEBUG] Am dat click direct în primul textbox (fallback).")
             except Exception as e:
@@ -326,13 +333,52 @@ def open_group_and_post(driver: webdriver.Chrome,
                 )
                 return
 
-        # --- 4. Introdu textul în textbox (composer deschis) ---
+        # --- 4. Găsește textbox-ul de postare (NU cel de comentarii) și scrie textul ---
 
         try:
-            textbox = WebDriverWait(driver, 20).until(
-                EC.element_to_be_clickable((By.XPATH, "//div[@role='textbox']"))
-            )
-            textbox.click()
+            textbox = None
+
+            textbox_xpaths = [
+                # mai întâi, textbox în interiorul GroupInlineComposer, exclus comentarii
+                "//div[@data-pagelet='GroupInlineComposer']"
+                "//div[@role='textbox' and "
+                "not(contains(@aria-label,'comentariu')) and "
+                "not(contains(@aria-label,'comment'))]",
+
+                # fallback: primul textbox fără 'comentariu/comment' în aria-label
+                "(//div[@role='textbox' and "
+                "not(contains(@aria-label,'comentariu')) and "
+                "not(contains(@aria-label,'comment'))])[1]",
+            ]
+
+            for xp in textbox_xpaths:
+                try:
+                    tb = WebDriverWait(driver, 20).until(
+                        EC.presence_of_element_located((By.XPATH, xp))
+                    )
+                    driver.execute_script(
+                        "arguments[0].scrollIntoView({block:'center'});", tb
+                    )
+                    WebDriverWait(driver, 10).until(
+                        EC.element_to_be_clickable((By.XPATH, xp))
+                    )
+                    try:
+                        tb.click()
+                    except Exception:
+                        # fallback JS click dacă Selenium clasic e interceptat
+                        driver.execute_script("arguments[0].click();", tb)
+                    textbox = tb
+                    print(f"[DEBUG] Am găsit textbox-ul de postare cu XPATH: {xp}")
+                    break
+                except Exception:
+                    continue
+
+            if textbox is None:
+                print(
+                    "[WARN] Nu am găsit textbox-ul de postare (probabil a rămas doar cel de comentarii)."
+                )
+                return
+
             if text:
                 textbox.send_keys(text)
             print("[DEBUG] Am introdus textul în postare.")
@@ -391,6 +437,9 @@ def open_group_and_post(driver: webdriver.Chrome,
                     "      @aria-label='Trimite' or "
                     "      @aria-label='Publică']"
                 ))
+            )
+            driver.execute_script(
+                "arguments[0].scrollIntoView({block:'center'});", post_btn
             )
             post_btn.click()
             print("[DEBUG] Am apăsat butonul de postare.")
@@ -995,4 +1044,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
