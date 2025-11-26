@@ -224,42 +224,112 @@ def open_group_and_post(driver: webdriver.Chrome,
     """
     Deschide un link de grup și postează textul + imaginile.
 
-    Atenție: Facebook schimbă des UI-ul, deci selectorii pot avea nevoie
-    de ajustări dacă ceva nu mai merge.
+    1. Navighează în grup
+    2. Găsește composer-ul folosind:
+       - data-pagelet="GroupInlineComposer" + role="button"
+       - texte RO/EN: "Scrie ceva", "Scrie acum", "Scrie o postare", "Create post", etc.
+    3. Dacă nu găsește buton, încearcă direct primul <div role="textbox">
+    4. Scrie textul, atașează imagini, apasă Postează.
     """
+
+    def try_click_xpaths(xpaths, log_prefix="composer"):
+        """Încearcă pe rând mai multe XPATH-uri până reușește un click."""
+        for xp in xpaths:
+            try:
+                el = WebDriverWait(driver, 10).until(
+                    EC.element_to_be_clickable((By.XPATH, xp))
+                )
+                el.click()
+                print(f"[DEBUG] {log_prefix} click cu XPATH: {xp}")
+                return True
+            except Exception:
+                continue
+        return False
+
     try:
         print(f"[DEBUG] Navighez la {group_url}")
         driver.get(group_url)
 
         # așteptăm încărcarea paginii grupului
         wait_for_facebook_home(driver, timeout=60)
+        time.sleep(3)  # mic delay pentru componentele dinamice
 
         if simulate:
             print("[DEBUG] Simulare activă – nu postez efectiv.")
             return
 
-        # 1. Deschide composer-ul de postare ("Scrie o postare", "Create post", etc.)
-        try:
-            create_btn = WebDriverWait(driver, 30).until(
-                EC.element_to_be_clickable((
-                    By.XPATH,
-                    "//div[@role='button' and "
-                    "      (descendant::span[contains(text(), 'Scrie o postare')] "
-                    "    or descendant::span[contains(text(), 'Create post')] "
-                    "    or descendant::span[contains(text(), \"What's on your mind\")] "
-                    "    or descendant::span[contains(text(), 'Write something')] "
-                    "      )]"
-                ))
-            )
-            create_btn.click()
-            print("[DEBUG] Am deschis composer-ul de postare.")
-        except Exception as e:
-            print("[WARN] Nu am găsit butonul de creare postare:", e)
-            return
+        # --- 1. Caută butonul de composer în interiorul GroupInlineComposer ---
 
-        # 2. Introdu textul în textbox
+        group_inline_xpaths = [
+            # cu text explicit în span
+            "//div[@data-pagelet='GroupInlineComposer']"
+            "//div[@role='button'][.//span[contains(text(),'Scrie ceva')]]",
+
+            "//div[@data-pagelet='GroupInlineComposer']"
+            "//div[@role='button'][.//span[contains(text(),'Scrie acum')]]",
+
+            "//div[@data-pagelet='GroupInlineComposer']"
+            "//div[@role='button'][.//span[contains(text(),'Scrie o postare')]]",
+
+            "//div[@data-pagelet='GroupInlineComposer']"
+            "//div[@role='button'][.//span[contains(text(),'Creează o postare')]]",
+
+            # engleză
+            "//div[@data-pagelet='GroupInlineComposer']"
+            "//div[@role='button'][.//span[contains(text(),'Create post')]]",
+
+            "//div[@data-pagelet='GroupInlineComposer']"
+            "//div[@role='button'][.//span[contains(text(),\"What's on your mind\")]]",
+
+            # fallback generic: primul button din GroupInlineComposer care are un span
+            "(//div[@data-pagelet='GroupInlineComposer']//div[@role='button'][.//span])[1]",
+        ]
+
+        clicked = try_click_xpaths(group_inline_xpaths, log_prefix="GroupInlineComposer")
+
+        # --- 2. Dacă nu găsim în GroupInlineComposer, folosim pattern-urile generice RO/EN ---
+
+        if not clicked:
+            generic_composer_xpaths = [
+                # română
+                "//div[@role='button'][.//span[contains(text(),'Scrie ceva')]]",
+                "//div[@role='button'][.//span[contains(text(),'Scrie acum')]]",
+                "//div[@role='button'][.//span[contains(text(),'Scrie o postare')]]",
+                "//div[@role='button'][.//span[contains(text(),'Creează o postare')]]",
+
+                # engleză
+                "//div[@role='button'][.//span[contains(text(),'Create post')]]",
+                "//div[@role='button'][.//span[contains(text(),\"What's on your mind\")]]",
+                "//div[@role='button'][.//span[contains(text(),'Write something')]]",
+
+                # aria-label (în cazul în care textul e ascuns în aria-label)
+                "//div[@role='button' and @aria-label and "
+                " (contains(@aria-label,'postare') or contains(@aria-label,'Post'))]",
+            ]
+            clicked = try_click_xpaths(generic_composer_xpaths, log_prefix="composer")
+
+        # --- 3. Fallback: click direct în primul textbox dacă nu găsim niciun buton ---
+
+        if not clicked:
+            try:
+                textbox_fallback = WebDriverWait(driver, 15).until(
+                    EC.element_to_be_clickable(
+                        (By.XPATH, "(//div[@role='textbox'])[1]")
+                    )
+                )
+                textbox_fallback.click()
+                print("[DEBUG] Am dat click direct în primul textbox (fallback).")
+            except Exception as e:
+                print(
+                    "[WARN] Nu am putut găsi nici butonul de creare postare, "
+                    "nici textbox-ul:", e
+                )
+                return
+
+        # --- 4. Introdu textul în textbox (composer deschis) ---
+
         try:
-            textbox = WebDriverWait(driver, 30).until(
+            textbox = WebDriverWait(driver, 20).until(
                 EC.element_to_be_clickable((By.XPATH, "//div[@role='textbox']"))
             )
             textbox.click()
@@ -269,12 +339,12 @@ def open_group_and_post(driver: webdriver.Chrome,
         except Exception as e:
             print("[WARN] Nu pot scrie textul postării:", e)
 
-        # 3. Încarcă imaginile (dacă există)
+        # --- 5. Încarcă imaginile (dacă există) ---
+
         for img_path in images or []:
             abs_path = os.path.abspath(img_path)
             try:
-                # input-ul pentru imagini este de tip file și de obicei e ascuns
-                # încercăm mai întâi să-l găsim direct
+                # input <input type="file" accept="image/...">
                 file_inputs = driver.find_elements(
                     By.XPATH,
                     "//input[@type='file' and contains(@accept, 'image')]",
@@ -282,13 +352,12 @@ def open_group_and_post(driver: webdriver.Chrome,
                 file_input = file_inputs[0] if file_inputs else None
 
                 if file_input is None:
-                    # încercăm să apăsăm pe butonul Foto ca să apară input-ul
+                    # încercăm să apăsăm pe Foto/Photo ca să apară input-ul
                     try:
                         photo_btn = driver.find_element(
                             By.XPATH,
-                            "//div[@role='button' and "
-                            " (descendant::span[contains(text(), 'Foto')] or "
-                            "  descendant::span[contains(text(), 'Photo')])] "
+                            "//div[@role='button'][.//span[contains(text(),'Foto')] "
+                            " or .//span[contains(text(),'Photo')]]"
                         )
                         photo_btn.click()
                         time.sleep(1)
@@ -311,14 +380,16 @@ def open_group_and_post(driver: webdriver.Chrome,
                 print("[WARN] Nu pot atașa imaginea:", abs_path, e)
                 break
 
-        # 4. Apasă butonul de „Postare”
+        # --- 6. Apasă butonul de „Postare” ---
+
         try:
             post_btn = WebDriverWait(driver, 30).until(
                 EC.element_to_be_clickable((
                     By.XPATH,
                     "//div[@aria-label='Postează' or "
                     "      @aria-label='Post' or "
-                    "      @aria-label='Trimite']"
+                    "      @aria-label='Trimite' or "
+                    "      @aria-label='Publică']"
                 ))
             )
             post_btn.click()
@@ -924,3 +995,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
