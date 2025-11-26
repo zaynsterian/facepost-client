@@ -677,8 +677,25 @@ class FacepostApp:
         root = self.root
         root.geometry("900x720")
 
-        main_frame = tk.Frame(root)
-        main_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        # Container cu Canvas + Scrollbar pentru conținut scrollabil
+        container = tk.Frame(root)
+        container.pack(fill="both", expand=True, padx=10, pady=10)
+
+        canvas = tk.Canvas(container)
+        canvas.pack(side="left", fill="both", expand=True)
+
+        scrollbar = tk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        scrollbar.pack(side="right", fill="y")
+
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        main_frame = tk.Frame(canvas)
+        canvas.create_window((0, 0), window=main_frame, anchor="nw")
+
+        def _on_frame_config(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        main_frame.bind("<Configure>", _on_frame_config)
 
         # Config licență (sus) + buton Facebook login
         config_frame = tk.LabelFrame(main_frame, text="Config licență")
@@ -725,9 +742,9 @@ class FacepostApp:
         images_frame = tk.Frame(post_frame)
         images_frame.pack(fill="x", pady=5)
 
-        tk.Button(images_frame, text="Adaugă imagini", command=self.add_images_clicked).pack(
-            side="left"
-        )
+        tk.Button(
+            images_frame, text="Adaugă imagini", command=self.add_images_clicked
+        ).pack(side="left")
         self.images_listbox = tk.Listbox(images_frame, height=4)
         self.images_listbox.pack(side="left", fill="x", expand=True, padx=5)
         tk.Button(
@@ -747,7 +764,7 @@ class FacepostApp:
             variable=self.simulate_var,
         ).pack(side="left", padx=10)
 
-                # Programare automată zilnică
+        # Programare automată zilnică
         schedule_frame = tk.LabelFrame(main_frame, text="Programare automată zilnică")
         schedule_frame.pack(fill="x", pady=5)
 
@@ -827,7 +844,9 @@ class FacepostApp:
         )
         self.run_btn.pack(side="right")
 
+        self._update_daily_button_text()
         self._update_interval_button_text()
+        self._update_run_button_text()
 
         # ---------- helperi UI ----------
 
@@ -1263,6 +1282,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
