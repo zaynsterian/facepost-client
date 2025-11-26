@@ -690,12 +690,24 @@ class FacepostApp:
         canvas.configure(yscrollcommand=scrollbar.set)
 
         main_frame = tk.Frame(canvas)
-        canvas.create_window((0, 0), window=main_frame, anchor="nw")
+        frame_id = canvas.create_window((0, 0), window=main_frame, anchor="nw")
 
+        # scrollregion + lățimea frame-ului
         def _on_frame_config(event):
             canvas.configure(scrollregion=canvas.bbox("all"))
 
+        def _on_canvas_config(event):
+            # facem main_frame să aibă lățimea canvas-ului → nu mai apare banda gri
+            canvas.itemconfig(frame_id, width=event.width)
+
         main_frame.bind("<Configure>", _on_frame_config)
+        canvas.bind("<Configure>", _on_canvas_config)
+
+        # scroll cu rotița mouse-ului (Windows)
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
         # Config licență (sus) + buton Facebook login
         config_frame = tk.LabelFrame(main_frame, text="Config licență")
@@ -1282,6 +1294,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
