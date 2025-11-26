@@ -365,17 +365,54 @@ def open_group_and_post(driver: webdriver.Chrome,
             textbox = None
 
             textbox_xpaths = [
-                # mai întâi, textbox în interiorul GroupInlineComposer, exclus comentarii
+                # 1) Preferăm textbox-ul din dialogul de postare (overlay)
+                "//div[@role='dialog']//div[@role='textbox' and "
+                "not(contains(@aria-label,'comentariu')) and "
+                "not(contains(@aria-label,'comment'))]",
+
+                # 2) Apoi textbox în interiorul GroupInlineComposer (inline)
                 "//div[@data-pagelet='GroupInlineComposer']"
                 "//div[@role='textbox' and "
                 "not(contains(@aria-label,'comentariu')) and "
                 "not(contains(@aria-label,'comment'))]",
 
-                # fallback: primul textbox fără 'comentariu/comment' în aria-label
+                # 3) Fallback: primul textbox fără 'comentariu/comment' în aria-label
                 "(//div[@role='textbox' and "
                 "not(contains(@aria-label,'comentariu')) and "
                 "not(contains(@aria-label,'comment'))])[1]",
             ]
+
+            for xp in textbox_xpaths:
+                try:
+                    tb = WebDriverWait(driver, 20).until(
+                        EC.presence_of_element_located((By.XPATH, xp))
+                    )
+                    driver.execute_script(
+                        "arguments[0].scrollIntoView({block:'center'});", tb
+                    )
+                    WebDriverWait(driver, 10).until(
+                        EC.element_to_be_clickable((By.XPATH, xp))
+                    )
+                    try:
+                        tb.click()
+                    except Exception:
+                        # fallback JS click dacă Selenium clasic e interceptat
+                        driver.execute_script("arguments[0].click();", tb)
+                    textbox = tb
+                    print(f"[DEBUG] Am găsit textbox-ul de postare cu XPATH: {xp}")
+                    break
+                except Exception:
+                    continue
+
+            if textbox is None:
+                print(
+                    "[WARN] Nu am găsit textbox-ul de postare (probabil a rămas doar cel de comentarii)."
+                )
+                return
+
+            if text:
+                textbox.send_keys(text)
+            print("[DEBUG] Am introdus textul în postare.")
 
             for xp in textbox_xpaths:
                 try:
@@ -1294,6 +1331,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
