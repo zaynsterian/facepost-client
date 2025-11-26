@@ -242,6 +242,22 @@ def wait_for_facebook_home(driver: webdriver.Chrome, timeout: int = 60):
 
 # ================== LOGICA DE POSTARE ==================
 
+def sanitize_for_chromedriver(text: str) -> str:
+    """
+    ChromeDriver nu suportă caractere în afara BMP (ex: unele emoji).
+    Filtrăm caracterele cu codepoint > 0xFFFF ca să nu arunce eroare.
+    """
+    if not text:
+        return text
+    safe_chars = []
+    for ch in text:
+        if ord(ch) <= 0xFFFF:
+            safe_chars.append(ch)
+        else:
+            # caracterele problematice le aruncăm; poți pune în loc "?" dacă vrei
+            continue
+    return "".join(safe_chars)
+
 def open_group_and_post(driver: webdriver.Chrome,
                         group_url: str,
                         text: str,
@@ -411,39 +427,12 @@ def open_group_and_post(driver: webdriver.Chrome,
                 return
 
             if text:
-                textbox.send_keys(text)
-            print("[DEBUG] Am introdus textul în postare.")
-
-            for xp in textbox_xpaths:
-                try:
-                    tb = WebDriverWait(driver, 20).until(
-                        EC.presence_of_element_located((By.XPATH, xp))
+                safe_text = sanitize_for_chromedriver(text)
+                if safe_text != text:
+                    print(
+                        "[WARN] Unele emoji sau caractere speciale au fost omise din text (limitare ChromeDriver BMP)."
                     )
-                    driver.execute_script(
-                        "arguments[0].scrollIntoView({block:'center'});", tb
-                    )
-                    WebDriverWait(driver, 10).until(
-                        EC.element_to_be_clickable((By.XPATH, xp))
-                    )
-                    try:
-                        tb.click()
-                    except Exception:
-                        # fallback JS click dacă Selenium clasic e interceptat
-                        driver.execute_script("arguments[0].click();", tb)
-                    textbox = tb
-                    print(f"[DEBUG] Am găsit textbox-ul de postare cu XPATH: {xp}")
-                    break
-                except Exception:
-                    continue
-
-            if textbox is None:
-                print(
-                    "[WARN] Nu am găsit textbox-ul de postare (probabil a rămas doar cel de comentarii)."
-                )
-                return
-
-            if text:
-                textbox.send_keys(text)
+                textbox.send_keys(safe_text)
             print("[DEBUG] Am introdus textul în postare.")
         except Exception as e:
             print("[WARN] Nu pot scrie textul postării:", e)
@@ -1331,6 +1320,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
