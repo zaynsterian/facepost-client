@@ -184,9 +184,26 @@ def create_driver() -> webdriver.Chrome:
 
 def configure_facebook_login(parent: tk.Tk | None = None):
     """
-    Deschide Chrome cu profilul Facepost și lasă userul să se logheze manual pe Facebook.
-    Se folosește o singură dată, apoi rămâne logat în profil.
+    Ghidează userul să configureze login-ul în Facebook.
+
+    Flux nou:
+    1. Afișăm un mesaj de instrucțiuni.
+    2. După ce userul apasă OK, deschidem Chrome cu profilul Facepost.
+    3. Userul se loghează în Facebook în fereastra de Chrome și apoi o închide.
     """
+
+    # 1) Instrucțiuni ÎNAINTE de deschiderea Chrome
+    messagebox.showinfo(
+        APP_NAME,
+        "Vom configura logarea în Facebook.\n\n"
+        "1. După ce apeși OK, se va deschide o fereastră de Chrome cu profilul Facepost.\n"
+        "2. Conectează-te în contul tău de Facebook (introdu emailul și parola și finalizează login-ul).\n"
+        "3. După ce ești logat, pur și simplu închide fereastra de Chrome.\n\n"
+        "Nu trebuie să mai faci nimic în Facepost pentru acest pas.",
+        parent=parent,
+    )
+
+    # 2) Abia acum pornim Chrome cu profilul Facepost
     try:
         driver = create_driver()
     except WebDriverException as e:
@@ -198,15 +215,24 @@ def configure_facebook_login(parent: tk.Tk | None = None):
         )
         return
 
-    driver.get("https://www.facebook.com/")
-    messagebox.showinfo(
-        APP_NAME,
-        "S-a deschis un Chrome cu profilul Facepost.\n"
-        "Loghează-te în Facebook, apoi închide fereastra.\n\n"
-        "După aceea, Facepost va folosi acest profil pentru postări.",
-        parent=parent,
-    )
+    # 3) Deschidem Facebook pentru login, fără alte pop-up-uri
+    try:
+        driver.get("https://www.facebook.com/")
+    except Exception as e:
+        messagebox.showerror(
+            APP_NAME,
+            f"A apărut o eroare la deschiderea Facebook.\n\n{e}",
+            parent=parent,
+        )
+        # dacă a murit ceva grav, închidem driverul
+        try:
+            driver.quit()
+        except Exception:
+            pass
+        return
 
+    # NU mai afișăm alt mesaj aici; userul lucrează liniștit în Chrome,
+    # se loghează și când termină închide fereastra de Chrome.
 
 def wait_for_facebook_home(driver: webdriver.Chrome, timeout: int = 60):
     WebDriverWait(driver, timeout).until(
@@ -451,9 +477,13 @@ def open_group_and_post(driver: webdriver.Chrome,
         print("[ERROR] Eroare în open_group_and_post pentru", group_url, ":", e)
 
 
-def run_posting(groups, text: str, images, delay: int, simulate: bool = False):
+def run_posting(
+    groups, text: str, images, delay: int, simulate: bool = False, stop_event=None
+):
     """
     Rulează efectiv postarea în toate grupurile, cu delay între ele.
+    Poate fi întreruptă prin stop_event (Event) – se oprește între grupuri
+    și nu mai pornește noi postări după ce stop_event este setat.
     """
     driver = None
     try:
@@ -461,13 +491,26 @@ def run_posting(groups, text: str, images, delay: int, simulate: bool = False):
         wait_for_facebook_home(driver, timeout=60)
 
         for idx, group in enumerate(groups, start=1):
+            if stop_event is not None and stop_event.is_set():
+                print("[RUN] Stop requested – opresc înainte de următorul grup.")
+                break
+
             group = group.strip()
             if not group:
                 continue
             print(f"[RUN] ({idx}/{len(groups)}) {group}")
             open_group_and_post(driver, group, text, images, simulate=simulate)
+
             if idx < len(groups):
-                time.sleep(delay)
+                # așteptăm delay-ul, dar ieșim mai rapid dacă se cere stop
+                total = int(delay)
+                for _ in range(total):
+                    if stop_event is not None and stop_event.is_set():
+                        print("[RUN] Stop requested în timpul delay-ului.")
+                        break
+                    time.sleep(1)
+                if stop_event is not None and stop_event.is_set():
+                    break
     finally:
         if driver:
             try:
@@ -538,16 +581,18 @@ class SchedulerThread(threading.Thread):
                 now = datetime.now()
                 cfg = CONFIG
 
-                # 1) schedule clasic dimineață/seară
-                next_fixed = compute_next_schedule_run(cfg)
-                if next_fixed and now >= next_fixed and not self.app.is_running:
-                    print("[SCHEDULER] Rulez rundă programată (dimineață/seară).")
-                    self.app.run_now(simulate=False, from_scheduler=True)
-                    time.sleep(60)
-                    continue
+                # 1) schedule clasic dimineață/seară – doar dacă programarea zilnică este activă
+                if cfg.get("daily_schedule_active"):
+                    next_fixed = compute_next_schedule_run(cfg)
+                    if next_fixed and now >= next_fixed and not self.app.is_running:
+                        print("[SCHEDULER] Rulez rundă programată (dimineață/seară).")
+                        self.app.run_now(simulate=False, from_scheduler=True)
+                        # așteptăm puțin ca să evităm dublarea în același minut
+                        time.sleep(60)
+                        continue
 
-                # 2) schedule repetitiv (din X în X minute)
-                if cfg.get("interval_enabled"):
+                # 2) schedule repetitiv (din X în X minute) – doar dacă este activă și configurată
+                if cfg.get("interval_schedule_active") and cfg.get("interval_enabled"):
                     try:
                         minutes = int(cfg.get("interval_minutes") or 0)
                     except ValueError:
@@ -585,6 +630,7 @@ class FacepostApp:
         self.is_running = False
         self.images = set(CONFIG.get("images", []))
         self.scheduler_thread = None
+        self.stop_event = None  # pentru a opri rularea curentă
 
         self.email_var = tk.StringVar(value=CONFIG.get("email", ""))
         self.delay_var = tk.StringVar(value=str(CONFIG.get("delay_seconds", 120)))
@@ -610,8 +656,19 @@ class FacepostApp:
             value=str(CONFIG.get("interval_minutes", 60))
         )
 
+        # starea de "programare activă" pentru cele două tipuri de scheduler
+        self.daily_schedule_active_var = tk.BooleanVar(
+            value=CONFIG.get("daily_schedule_active", False)
+        )
+        self.interval_schedule_active_var = tk.BooleanVar(
+            value=CONFIG.get("interval_schedule_active", False)
+        )
+
         self._build_ui()
         self._load_initial_texts()
+        self._update_daily_button_text()
+        self._update_interval_button_text()
+        self._update_run_button_text()
         self._start_scheduler_if_needed()
 
     # ---------- UI building ----------
@@ -690,7 +747,7 @@ class FacepostApp:
             variable=self.simulate_var,
         ).pack(side="left", padx=10)
 
-        # Programare automată zilnică
+                # Programare automată zilnică
         schedule_frame = tk.LabelFrame(main_frame, text="Programare automată zilnică")
         schedule_frame.pack(fill="x", pady=5)
 
@@ -714,6 +771,15 @@ class FacepostApp:
             schedule_frame, textvariable=self.schedule_time_evening_var, width=6
         ).grid(row=1, column=1, sticky="w")
 
+        # buton start/stop pentru programarea zilnică
+        self.daily_button = tk.Button(
+            schedule_frame,
+            text="Pornește programarea zilnică",  # textul va fi actualizat din _update_daily_button_text
+            command=self.toggle_daily_schedule,
+            width=25,
+        )
+        self.daily_button.grid(row=2, column=0, columnspan=4, pady=(5, 0), sticky="w")
+
         # Programare repetitivă
         interval_frame = tk.LabelFrame(main_frame, text="Programare repetitivă")
         interval_frame.pack(fill="x", pady=5)
@@ -735,15 +801,15 @@ class FacepostApp:
 
         self.interval_button = tk.Button(
             interval_frame,
-            text="Start",
+            text="Pornește repetarea",  # textul va fi actualizat din _update_interval_button_text
             command=self.toggle_interval,
-            width=8,
+            width=18,
         )
         self.interval_button.grid(row=0, column=3, padx=8, sticky="w")
 
         tk.Label(
             interval_frame,
-            text="(rulări repetate până apeși Stop sau închizi aplicația)",
+            text="(rulări repetate până apeși Oprește repetarea sau închizi aplicația)",
             fg="gray",
         ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(3, 0))
 
@@ -776,28 +842,105 @@ class FacepostApp:
         for img in self.images:
             self.images_listbox.insert("end", img)
 
-    def _start_scheduler_if_needed(self):
+        def _start_scheduler_if_needed(self):
         if self.scheduler_thread is not None:
             return
-        if (
-            CONFIG.get("schedule_enabled_morning")
-            or CONFIG.get("schedule_enabled_evening")
-            or CONFIG.get("interval_enabled")
+        if CONFIG.get("daily_schedule_active") or CONFIG.get(
+            "interval_schedule_active"
         ):
             self.scheduler_thread = SchedulerThread(self)
             self.scheduler_thread.start()
 
-    def _update_interval_button_text(self):
-        if self.interval_enabled_var.get():
-            self.interval_button.config(text="Stop")
+    def _update_daily_button_text(self):
+        if getattr(self, "daily_button", None) is None:
+            return
+        if self.daily_schedule_active_var.get():
+            self.daily_button.config(text="Oprește programarea zilnică")
         else:
-            self.interval_button.config(text="Start")
+            self.daily_button.config(text="Pornește programarea zilnică")
+
+    def _update_interval_button_text(self):
+        if getattr(self, "interval_button", None) is None:
+            return
+        if self.interval_schedule_active_var.get():
+            self.interval_button.config(text="Oprește repetarea")
+        else:
+            self.interval_button.config(text="Pornește repetarea")
+
+    def _update_run_button_text(self):
+        if self.is_running:
+            self.run_btn.config(text="Oprește postările")
+        else:
+            self.run_btn.config(text="Postează acum")
+
+    def _update_scheduler_state(self):
+        # sincronizăm flag-urile în CONFIG și pornim/oprim thread-ul de scheduler
+        CONFIG["daily_schedule_active"] = bool(self.daily_schedule_active_var.get())
+        CONFIG["interval_schedule_active"] = bool(
+            self.interval_schedule_active_var.get()
+        )
+        save_config(CONFIG)
+
+        active_daily = CONFIG["daily_schedule_active"]
+        active_interval = CONFIG["interval_schedule_active"]
+
+        if active_daily or active_interval:
+            self._start_scheduler_if_needed()
+        else:
+            # Oprim schedulerul dacă nu mai e nimic activ
+            if self.scheduler_thread is not None:
+                try:
+                    self.scheduler_thread.stop()
+                except Exception:
+                    pass
+                self.scheduler_thread = None
+
+    def toggle_daily_schedule(self):
+    current = self.daily_schedule_active_var.get()
+    self.daily_schedule_active_var.set(not current)
+    self._update_daily_button_text()
+    self._update_scheduler_state()
 
     def toggle_interval(self):
-        current = self.interval_enabled_var.get()
-        self.interval_enabled_var.set(not current)
-        self._update_interval_button_text()
-        self.schedule_changed()
+        # Start/Stop pentru programarea repetitivă
+        if self.interval_schedule_active_var.get():
+            # oprim
+            self.interval_schedule_active_var.set(False)
+            self._update_interval_button_text()
+            self._update_scheduler_state()
+        else:
+            # pornim – trebuie să fie setat intervalul
+            try:
+                interval_minutes = int(self.interval_minutes_var.get() or "0")
+            except ValueError:
+                interval_minutes = 0
+
+            if not self.interval_enabled_var.get():
+                messagebox.showerror(
+                    APP_NAME,
+                    "Bifează opțiunea 'Rulează la fiecare' înainte de a porni programarea repetitivă.",
+                    parent=self.root,
+                )
+                return
+
+            if interval_minutes <= 0:
+                messagebox.showerror(
+                    APP_NAME,
+                    "Te rog introdu un număr valid de minute pentru programarea repetitivă.",
+                    parent=self.root,
+                )
+                return
+
+            # activăm programarea repetitivă
+            self.interval_schedule_active_var.set(True)
+            self._update_interval_button_text()
+            self._update_scheduler_state()
+
+            # prima rundă rulează imediat
+            self.run_now(simulate=None, from_scheduler=False)
+            # și scheduler-ul va continua de la acest moment
+            if self.scheduler_thread is not None:
+                self.scheduler_thread.last_interval_run = datetime.now()
 
     # ---------- acțiuni config & schedule ----------
 
@@ -831,7 +974,7 @@ class FacepostApp:
         save_config(CONFIG)
         messagebox.showinfo(APP_NAME, "Config salvată.", parent=self.root)
 
-    def schedule_changed(self):
+    d    def schedule_changed(self):
         CONFIG["schedule_enabled_morning"] = bool(
             self.schedule_enabled_morning_var.get()
         )
@@ -849,8 +992,6 @@ class FacepostApp:
         CONFIG["interval_minutes"] = interval_minutes
 
         save_config(CONFIG)
-        self._update_interval_button_text()
-        self._start_scheduler_if_needed()
 
     # ---------- acțiuni licență ----------
 
@@ -1055,22 +1196,28 @@ class FacepostApp:
         if simulate is None:
             simulate = bool(self.simulate_var.get())
 
+        # pregătim flag-ul de oprire pentru această rundă
+        self.stop_event = threading.Event()
+
         t = threading.Thread(
             target=self._run_thread,
-            args=(groups, text, list(self.images), delay, simulate),
+            args=(groups, text, list(self.images), delay, simulate, self.stop_event),
             daemon=True,
         )
         t.start()
 
-    def run_now_clicked(self):
+        def run_now_clicked(self):
+        # Butonul "Postează acum" funcționează ca Start/Stop pentru runda curentă
+        if self.is_running:
+            # cerem oprirea rundei curente
+            if self.stop_event is not None:
+                self.stop_event.set()
+            return
         self.run_now(simulate=None, from_scheduler=False)
 
-    def _run_thread(self, groups, text, images, delay, simulate):
+    def _run_thread(self, groups, text, images, delay, simulate, stop_event):
         self.is_running = True
-        try:
-            self.run_btn.config(state="disabled")
-        except Exception:
-            pass
+        self._update_run_button_text()
         self.status_var.set("Rulez postările...")
         try:
             # log către server (best-effort)
@@ -1081,17 +1228,30 @@ class FacepostApp:
                 print("[WARN] Nu pot trimite log_run:", e)
 
             # rulare efectivă
-            run_posting(groups, text, images, delay, simulate=simulate)
-            if simulate:
-                self.status_var.set("Gata (simulare).")
+            run_posting(
+                groups,
+                text,
+                images,
+                delay,
+                simulate=simulate,
+                stop_event=stop_event,
+            )
+
+            if stop_event is not None and stop_event.is_set():
+                self.status_var.set(
+                    "Postările au fost oprite la cererea utilizatorului."
+                )
             else:
-                self.status_var.set("Gata – postările ar trebui să fie publicate.")
+                if simulate:
+                    self.status_var.set("Gata (simulare).")
+                else:
+                    self.status_var.set(
+                        "Gata – postările ar trebui să fie publicate."
+                    )
         finally:
             self.is_running = False
-            try:
-                self.run_btn.config(state="normal")
-            except Exception:
-                pass
+            self.stop_event = None
+            self._update_run_button_text()
 
 
 # ================== MAIN ==================
@@ -1104,6 +1264,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
