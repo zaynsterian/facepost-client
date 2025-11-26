@@ -854,18 +854,38 @@ class FacepostApp:
 
     # ---------- acțiuni licență ----------
 
-    def check_license_clicked(self):
+       def check_license_clicked(self):
         email = self.email_var.get().strip().lower()
         if not email:
             messagebox.showerror(
                 APP_NAME, "Te rog introdu emailul licenței.", parent=self.root
             )
             return
+
         CONFIG["email"] = email
         save_config(CONFIG)
 
         resp = check_license(email, CONFIG.get("device_id"))
+
+        # Dacă avem o eroare HTTP / de API, tratăm în funcție de cod
         if resp.get("error"):
+            http_code = resp.get("_http", 0)
+
+            # Nicio licență pentru acest email
+            if http_code == 404 and resp["error"] == "license not found":
+                self.license_status_var.set(
+                    "Nu există nicio licență pentru acest email. Verifică adresa de email sau contactează suportul."
+                )
+                return
+
+            # Limită de dispozitive atinsă
+            if http_code == 403 and resp["error"] == "device limit reached":
+                self.license_status_var.set(
+                    "Limita de dispozitive a fost atinsă pentru această licență. Te rugăm să eliberezi un dispozitiv existent sau să contactezi suportul."
+                )
+                return
+
+            # Alte erori – afișăm generic
             self.license_status_var.set(f"Eroare: {resp['error']}")
             return
 
@@ -874,6 +894,45 @@ class FacepostApp:
         is_trial = resp.get("is_trial")
         extra = resp.get("note")
 
+        # 1) Licență activă și device deja legat
+        if status == "ok":
+            msg = "Licență activă"
+            if exp:
+                msg += f" | expiră la: {exp}"
+            if is_trial:
+                msg += " | TRIAL"
+            if extra:
+                msg += f" | {extra}"
+            self.license_status_var.set(msg)
+            return
+
+        # 2) Licență activă, device NELEGAT încă → ghidăm userul să apese Bind
+        if status == "unbound":
+            if exp:
+                self.license_status_var.set(
+                    f'Licență activă până la {exp}. Te rog apasă butonul "Bind licență" pentru a continua.'
+                )
+            else:
+                self.license_status_var.set(
+                    'Licență activă. Te rog apasă butonul "Bind licență" pentru a continua.'
+                )
+            return
+
+        # 3) Licență expirată
+        if status == "expired":
+            self.license_status_var.set(
+                "Licență expirată. Te rugăm să îți reînnoiești abonamentul pentru a continua."
+            )
+            return
+
+        # 4) Licență suspendată / inactivă
+        if status == "inactive":
+            self.license_status_var.set(
+                "Licența este suspendată. Te rugăm să contactezi suportul pentru detalii."
+            )
+            return
+
+        # 5) Fallback – stilul vechi, în caz că apar alte statusuri
         msg = f"Status: {status}"
         if exp:
             msg += f" | expiră la: {exp}"
@@ -882,6 +941,7 @@ class FacepostApp:
         if extra:
             msg += f" | {extra}"
         self.license_status_var.set(msg)
+           
 
     def bind_license_clicked(self):
         email = self.email_var.get().strip().lower()
@@ -1044,5 +1104,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
