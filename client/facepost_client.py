@@ -829,7 +829,7 @@ class FacepostApp:
 
         self._update_interval_button_text()
 
-    # ---------- helperi UI ----------
+        # ---------- helperi UI ----------
 
     def _load_initial_texts(self):
         self.post_text.delete("1.0", "end")
@@ -842,7 +842,7 @@ class FacepostApp:
         for img in self.images:
             self.images_listbox.insert("end", img)
 
-        def _start_scheduler_if_needed(self):
+    def _start_scheduler_if_needed(self):
         if self.scheduler_thread is not None:
             return
         if CONFIG.get("daily_schedule_active") or CONFIG.get(
@@ -896,10 +896,10 @@ class FacepostApp:
                 self.scheduler_thread = None
 
     def toggle_daily_schedule(self):
-    current = self.daily_schedule_active_var.get()
-    self.daily_schedule_active_var.set(not current)
-    self._update_daily_button_text()
-    self._update_scheduler_state()
+        current = self.daily_schedule_active_var.get()
+        self.daily_schedule_active_var.set(not current)
+        self._update_daily_button_text()
+        self._update_scheduler_state()
 
     def toggle_interval(self):
         # Start/Stop pentru programarea repetitivă
@@ -974,7 +974,7 @@ class FacepostApp:
         save_config(CONFIG)
         messagebox.showinfo(APP_NAME, "Config salvată.", parent=self.root)
 
-    d    def schedule_changed(self):
+    def schedule_changed(self):
         CONFIG["schedule_enabled_morning"] = bool(
             self.schedule_enabled_morning_var.get()
         )
@@ -995,7 +995,7 @@ class FacepostApp:
 
     # ---------- acțiuni licență ----------
 
-       def check_license_clicked(self):
+    def check_license_clicked(self):
         email = self.email_var.get().strip().lower()
         if not email:
             messagebox.showerror(
@@ -1082,7 +1082,6 @@ class FacepostApp:
         if extra:
             msg += f" | {extra}"
         self.license_status_var.set(msg)
-           
 
     def bind_license_clicked(self):
         email = self.email_var.get().strip().lower()
@@ -1206,7 +1205,7 @@ class FacepostApp:
         )
         t.start()
 
-        def run_now_clicked(self):
+    def run_now_clicked(self):
         # Butonul "Postează acum" funcționează ca Start/Stop pentru runda curentă
         if self.is_running:
             # cerem oprirea rundei curente
@@ -1264,6 +1263,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
