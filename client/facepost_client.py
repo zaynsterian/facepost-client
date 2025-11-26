@@ -823,7 +823,7 @@ class FacepostApp:
         )
 
         self.run_btn = tk.Button(
-            bottom_frame, text="Rulează acum", command=self.run_now_clicked
+            bottom_frame, text="Postează acum", command=self.run_now_clicked
         )
         self.run_btn.pack(side="right")
 
@@ -1263,6 +1263,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
