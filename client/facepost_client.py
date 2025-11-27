@@ -262,40 +262,62 @@ def set_text_via_js(driver, element, text: str):
     """
     Setează textul într-un contenteditable folosind JavaScript,
     astfel încât:
-      - să accepte orice emoji / caractere Unicode
-      - să păstreze line-break-urile exact ca în textul original
+      - să accepte orice emoji / caractere Unicode (nu folosim send_keys)
+      - să păstreze line-break-urile (paragrafele) ca în textul original
+      - să treacă prin mecanismul normal de input (document.execCommand),
+        ca să fie văzut de React/Facebook
     """
     js = r"""
-var el = arguments[0];
+var container = arguments[0];
 var text = arguments[1];
-if (!el) return;
+if (!container) return;
 
-el.focus();
+// dăm focus pe container ca să activeze editorul
+container.focus();
 
-// goli conținutul existent
-el.innerHTML = "";
+// adevăratul element de input este de obicei document.activeElement
+var target = document.activeElement || container;
 
-// împărțim textul pe linii, păstrând inclusiv liniile goale
-var lines = text.split(/\r?\n/);
+if (typeof document.execCommand === 'function') {
+  try {
+    target.focus();
+    // selectăm și ștergem tot ce era înainte
+    document.execCommand('selectAll', false, null);
+    document.execCommand('delete', false, null);
+  } catch (e) {}
 
-for (var i = 0; i < lines.length; i++) {
-  var line = lines[i];
+  // împărțim textul pe linii (păstrăm și liniile goale)
+  var lines = text.split(/\r?\n/);
 
-  // dacă linia are conținut, o adăugăm ca text
-  if (line.length > 0) {
-    el.appendChild(document.createTextNode(line));
+  target.focus();
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+    if (line.length > 0) {
+      document.execCommand('insertText', false, line);
+    }
+    if (i < lines.length - 1) {
+      // nou paragraf (Enter) între linii
+      document.execCommand('insertParagraph');
+    }
   }
-
-  // pentru orice linie în afară de ultima, adăugăm un <br>
-  // asta păstrează atât line-break-urile simple, cât și liniile goale (două \n la rând => două <br>)
-  if (i < lines.length - 1) {
-    el.appendChild(document.createElement("br"));
+} else {
+  // fallback brut dacă execCommand nu există deloc
+  target.innerHTML = "";
+  var lines2 = text.split(/\r?\n/);
+  for (var j = 0; j < lines2.length; j++) {
+    var l = lines2[j];
+    if (l.length > 0) {
+      target.appendChild(document.createTextNode(l));
+    }
+    if (j < lines2.length - 1) {
+      target.appendChild(document.createElement("br"));
+    }
   }
 }
 
-// trimitem eveniment de input ca să știe React/Facebook că s-a modificat conținutul
+// notificăm React / Facebook că s-a schimbat conținutul
 var ev = new Event("input", {bubbles: true});
-el.dispatchEvent(ev);
+target.dispatchEvent(ev);
 """
     driver.execute_script(js, element, text)
 
@@ -1356,6 +1378,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
