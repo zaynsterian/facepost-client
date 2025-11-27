@@ -258,6 +258,41 @@ def sanitize_for_chromedriver(text: str) -> str:
             continue
     return "".join(safe_chars)
 
+def set_text_via_js(driver, element, text: str):
+    """
+    Setează textul într-un contenteditable folosind JavaScript,
+    ca să ocolim limitarea ChromeDriver (send_keys + BMP).
+    Acceptă orice emoji / caractere Unicode.
+    """
+    js = """
+var el = arguments[0];
+var text = arguments[1];
+if (!el) return;
+el.focus();
+
+// dacă există document.execCommand, îl folosim pentru a simula tastarea
+if (typeof document.execCommand === 'function') {
+    try {
+        document.execCommand('selectAll', false, null);
+    } catch(e) {}
+    try {
+        document.execCommand('insertText', false, text);
+    } catch(e) {
+        // fallback mai brutal
+        el.innerHTML = '';
+        el.textContent = text;
+        var ev = new Event('input', {bubbles: true});
+        el.dispatchEvent(ev);
+    }
+} else {
+    el.innerHTML = '';
+    el.textContent = text;
+    var ev = new Event('input', {bubbles: true});
+    el.dispatchEvent(ev);
+}
+"""
+    driver.execute_script(js, element, text)
+
 def open_group_and_post(driver: webdriver.Chrome,
                         group_url: str,
                         text: str,
@@ -427,13 +462,8 @@ def open_group_and_post(driver: webdriver.Chrome,
                 return
 
             if text:
-                safe_text = sanitize_for_chromedriver(text)
-                if safe_text != text:
-                    print(
-                        "[WARN] Unele emoji sau caractere speciale au fost omise din text (limitare ChromeDriver BMP)."
-                    )
-                textbox.send_keys(safe_text)
-            print("[DEBUG] Am introdus textul în postare.")
+                set_text_via_js(driver, textbox, text)
+            print("[DEBUG] Am introdus textul în postare (prin JS).")
         except Exception as e:
             print("[WARN] Nu pot scrie textul postării:", e)
 
@@ -1320,6 +1350,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
