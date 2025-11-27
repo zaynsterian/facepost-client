@@ -261,35 +261,41 @@ def sanitize_for_chromedriver(text: str) -> str:
 def set_text_via_js(driver, element, text: str):
     """
     Setează textul într-un contenteditable folosind JavaScript,
-    ca să ocolim limitarea ChromeDriver (send_keys + BMP).
-    Acceptă orice emoji / caractere Unicode.
+    astfel încât:
+      - să accepte orice emoji / caractere Unicode
+      - să păstreze line-break-urile exact ca în textul original
     """
-    js = """
+    js = r"""
 var el = arguments[0];
 var text = arguments[1];
 if (!el) return;
+
 el.focus();
 
-// dacă există document.execCommand, îl folosim pentru a simula tastarea
-if (typeof document.execCommand === 'function') {
-    try {
-        document.execCommand('selectAll', false, null);
-    } catch(e) {}
-    try {
-        document.execCommand('insertText', false, text);
-    } catch(e) {
-        // fallback mai brutal
-        el.innerHTML = '';
-        el.textContent = text;
-        var ev = new Event('input', {bubbles: true});
-        el.dispatchEvent(ev);
-    }
-} else {
-    el.innerHTML = '';
-    el.textContent = text;
-    var ev = new Event('input', {bubbles: true});
-    el.dispatchEvent(ev);
+// goli conținutul existent
+el.innerHTML = "";
+
+// împărțim textul pe linii, păstrând inclusiv liniile goale
+var lines = text.split(/\r?\n/);
+
+for (var i = 0; i < lines.length; i++) {
+  var line = lines[i];
+
+  // dacă linia are conținut, o adăugăm ca text
+  if (line.length > 0) {
+    el.appendChild(document.createTextNode(line));
+  }
+
+  // pentru orice linie în afară de ultima, adăugăm un <br>
+  // asta păstrează atât line-break-urile simple, cât și liniile goale (două \n la rând => două <br>)
+  if (i < lines.length - 1) {
+    el.appendChild(document.createElement("br"));
+  }
 }
+
+// trimitem eveniment de input ca să știe React/Facebook că s-a modificat conținutul
+var ev = new Event("input", {bubbles: true});
+el.dispatchEvent(ev);
 """
     driver.execute_script(js, element, text)
 
@@ -1350,6 +1356,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
