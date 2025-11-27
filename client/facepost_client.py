@@ -18,6 +18,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
 from selenium.common.exceptions import WebDriverException
+from selenium.webdriver.common.keys import Keys
 
 # ================== CONFIG GLOBALĂ ==================
 
@@ -475,8 +476,28 @@ def open_group_and_post(driver: webdriver.Chrome,
                 return
 
             if text:
-                set_text_via_js(driver, textbox, text)
-            print("[DEBUG] Am introdus textul în postare (prin JS).")
+                # încercăm varianta "user real": CTRL+A, DELETE, CTRL+V (din clipboard)
+                try:
+                    # ne asigurăm că textbox-ul are focus
+                    try:
+                        textbox.click()
+                    except Exception:
+                        driver.execute_script("arguments[0].click();", textbox)
+
+                    time.sleep(0.2)  # mică pauză să prindă focusul
+
+                    textbox.send_keys(Keys.CONTROL, "a")
+                    textbox.send_keys(Keys.DELETE)
+                    textbox.send_keys(Keys.CONTROL, "v")
+                    print("[DEBUG] Am introdus textul în postare prin clipboard (CTRL+V).")
+                except Exception as e:
+                    print(
+                        "[WARN] Paste prin clipboard eșuat, încerc inserare prin JS:", e
+                    )
+                    # fallback: varianta JS, în caz că CTRL+V e blocat din vreun motiv
+                    set_text_via_js(driver, textbox, text)
+            else:
+                print("[DEBUG] Textul de postare este gol – nu introduc nimic.")
         except Exception as e:
             print("[WARN] Nu pot scrie textul postării:", e)
 
@@ -1287,6 +1308,16 @@ class FacepostApp:
             return
 
         text = self.post_text.get("1.0", "end").strip()
+
+        # setăm textul postării în clipboard-ul sistemului
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self.root.update()  # necesar ca să se propage către OS
+            print(f"[DEBUG] Clipboard set cu textul postării (lungime {len(text)})")
+        except Exception as e:
+            print("[WARN] Nu pot seta clipboard-ul cu textul postării:", e)
+
         try:
             delay = int(self.delay_var.get() or "120")
         except ValueError:
@@ -1363,6 +1394,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
