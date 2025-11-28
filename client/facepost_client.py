@@ -636,6 +636,48 @@ def next_run_time_for(config: dict, which: str):
         candidate += timedelta(days=1)
     return candidate
 
+def should_run_daily_slot(config: dict, which: str, now: datetime) -> bool:
+    """
+    Decide dacă trebuie să rulăm acum slotul "which" (morning / evening).
+    Condiții:
+      - slotul e activat (schedule_enabled_morning/evening = True)
+      - ora configurată a trecut pentru ziua de azi
+      - nu am mai rulat deja azi pentru acest slot
+    """
+    enabled = config.get(f"schedule_enabled_{which}", False)
+    if not enabled:
+        return False
+
+    t = parse_time_str(config.get(f"schedule_time_{which}"))
+    if not t:
+        return False
+
+    # ora programată pentru astăzi
+    today = now.date()
+    scheduled_dt = datetime.combine(today, t)
+
+    # dacă încă nu am ajuns la ora programată, nu rulăm
+    if now < scheduled_dt:
+        return False
+
+    # verificăm dacă am mai rulat deja azi acest slot
+    last_key = f"last_run_{which}"
+    last_val = config.get(last_key)
+    last_date = None
+    if last_val:
+        try:
+            last_date = datetime.strptime(last_val, "%Y-%m-%d").date()
+        except Exception:
+            last_date = None
+
+    # dacă am rulat deja azi, nu mai rulăm încă o dată
+    if last_date == today:
+        return False
+
+    # marcăm că am rulat azi pentru acest slot
+    config[last_key] = today.strftime("%Y-%m-%d")
+    save_config(config)
+    return True
 
 def compute_next_schedule_run(config: dict):
     times = []
@@ -671,17 +713,19 @@ class SchedulerThread(threading.Thread):
                 now = datetime.now()
                 cfg = CONFIG
 
-                # 1) schedule clasic dimineață/seară – doar dacă programarea zilnică este activă
-                if cfg.get("daily_schedule_active"):
-                    next_fixed = compute_next_schedule_run(cfg)
-                    if next_fixed and now >= next_fixed and not self.app.is_running:
+                # 1) Programare zilnică dimineață/seară – doar dacă este activă
+                if cfg.get("daily_schedule_active") and not self.app.is_running:
+                    run_morning = should_run_daily_slot(cfg, "morning", now)
+                    run_evening = should_run_daily_slot(cfg, "evening", now)
+
+                    if run_morning or run_evening:
                         print("[SCHEDULER] Rulez rundă programată (dimineață/seară).")
                         self.app.run_now(simulate=False, from_scheduler=True)
-                        # așteptăm puțin ca să evităm dublarea în același minut
+                        # așteptăm puțin ca să nu dublăm runda în același interval
                         time.sleep(60)
                         continue
 
-                # 2) schedule repetitiv (din X în X minute) – doar dacă este activă și configurată
+                # 2) Programare repetitivă (din X în X minute) – doar dacă este activă și configurată
                 if cfg.get("interval_schedule_active") and cfg.get("interval_enabled"):
                     try:
                         minutes = int(cfg.get("interval_minutes") or 0)
@@ -1394,6 +1438,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
