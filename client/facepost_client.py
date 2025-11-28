@@ -1061,20 +1061,44 @@ class FacepostApp:
                 self.scheduler_thread = None
 
     def toggle_daily_schedule(self):
+        """
+        Pornește / oprește programarea zilnică.
+        IMPORTANT: sincronizăm mereu UI -> CONFIG înainte de a actualiza scheduler-ul,
+        ca să fie folosite orele și bifele pe care le vezi pe ecran.
+        """
         current = self.daily_schedule_active_var.get()
+        # toggling: dacă era activă, oprim; dacă era oprită, pornim
         self.daily_schedule_active_var.set(not current)
+
+        # sincronizăm orele și bifele din UI în CONFIG (morning/evening + interval)
+        self.schedule_changed()
+
+        # actualizăm textul butonului și starea scheduler-ului
         self._update_daily_button_text()
         self._update_scheduler_state()
 
     def toggle_interval(self):
-        # Start/Stop pentru programarea repetitivă
+        """
+        Pornește / oprește programarea repetitivă (din X în X minute).
+        La pornire:
+          - validăm intervalul
+          - sincronizăm UI -> CONFIG (prin schedule_changed)
+          - marcăm interval_schedule_active = True și pornim schedulerul
+          - rulăm prima rundă imediat
+        La oprire:
+          - doar dezactivăm flag-ul și actualizăm schedulerul.
+        """
         if self.interval_schedule_active_var.get():
-            # oprim
+            # oprim repetarea
             self.interval_schedule_active_var.set(False)
+
+            # sincronizăm UI -> CONFIG (bife + minute)
+            self.schedule_changed()
+
             self._update_interval_button_text()
             self._update_scheduler_state()
         else:
-            # pornim – trebuie să fie setat intervalul
+            # pornim repetarea – verificăm întâi că intervalul este valid
             try:
                 interval_minutes = int(self.interval_minutes_var.get() or "0")
             except ValueError:
@@ -1096,14 +1120,19 @@ class FacepostApp:
                 )
                 return
 
-            # activăm programarea repetitivă
+            # activăm programarea repetitivă în UI
             self.interval_schedule_active_var.set(True)
+
+            # sincronizăm UI -> CONFIG (inclusiv interval_minutes nou)
+            self.schedule_changed()
+
+            # actualizăm butonul și starea scheduler-ului (va porni thread-ul dacă e nevoie)
             self._update_interval_button_text()
             self._update_scheduler_state()
 
             # prima rundă rulează imediat
             self.run_now(simulate=None, from_scheduler=False)
-            # și scheduler-ul va continua de la acest moment
+            # scheduler-ul va continua de la acest moment
             if self.scheduler_thread is not None:
                 self.scheduler_thread.last_interval_run = datetime.now()
 
@@ -1140,19 +1169,30 @@ class FacepostApp:
         messagebox.showinfo(APP_NAME, "Config salvată.", parent=self.root)
 
     def schedule_changed(self):
+        """
+        Sincronizează din UI în CONFIG:
+          - bife + ore pentru dimineață / seară
+          - bifa + minute pentru programarea repetitivă
+        și salvează imediat în fișierul de config.
+        """
+        # dimineața
         CONFIG["schedule_enabled_morning"] = bool(
             self.schedule_enabled_morning_var.get()
         )
         CONFIG["schedule_time_morning"] = self.schedule_time_morning_var.get().strip()
+
+        # seara
         CONFIG["schedule_enabled_evening"] = bool(
             self.schedule_enabled_evening_var.get()
         )
         CONFIG["schedule_time_evening"] = self.schedule_time_evening_var.get().strip()
 
+        # interval repetitiv
         try:
             interval_minutes = int(self.interval_minutes_var.get() or "0")
         except ValueError:
             interval_minutes = 0
+
         CONFIG["interval_enabled"] = bool(self.interval_enabled_var.get())
         CONFIG["interval_minutes"] = interval_minutes
 
@@ -1438,6 +1478,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
