@@ -26,6 +26,7 @@ APP_NAME = "Facepost"
 API_URL = "https://facepost.onrender.com"
 CONFIG_FILE = Path.home() / ".facepost_config.json"
 CHROMEDRIVER_NAME = "chromedriver.exe"  # în același folder cu EXE-ul
+LOGIN_DRIVER: webdriver.Chrome | None = None
 
 UTC = timezone.utc
 
@@ -183,28 +184,54 @@ def create_driver() -> webdriver.Chrome:
 
 # ================== CONFIGURARE LOGIN FACEBOOK ==================
 
-def configure_facebook_login(parent: tk.Tk | None = None):
+def configure_facebook_login(
+    parent: tk.Tk | None = None,
+    mode: str = "login",
+):
     """
-    Ghidează userul să configureze login-ul în Facebook.
+    Ghidează userul să configureze sau să schimbe login-ul în Facebook.
 
-    Flux nou:
-    1. Afișăm un mesaj de instrucțiuni.
-    2. După ce userul apasă OK, deschidem Chrome cu profilul Facepost.
-    3. Userul se loghează în Facebook în fereastra de Chrome și apoi o închide.
+    mode:
+      - "login"  -> prima conectare / conectare normală
+      - "switch" -> schimbarea profilului de Facebook (delogare + relogare)
     """
+    global LOGIN_DRIVER
+
+    if mode == "switch":
+        instr = (
+            "Vom schimba profilul de Facebook folosit de Facepost.\n\n"
+            "1. După ce apeși OK, se va deschide o fereastră de Chrome cu profilul Facepost.\n"
+            "2. În fereastra de Facebook, deloghează-te din contul curent dacă este cazul.\n"
+            "3. Conectează-te în noul cont de Facebook pe care vrei să îl folosești.\n"
+            "4. După ce ești logat în noul cont, pur și simplu închide fereastra de Chrome.\n\n"
+            "Facepost va folosi de acum acest cont până când decizi să îl schimbi din nou."
+        )
+    else:
+        instr = (
+            "Vom configura logarea în Facebook.\n\n"
+            "1. După ce apeși OK, se va deschide o fereastră de Chrome cu profilul Facepost.\n"
+            "2. Conectează-te în contul tău de Facebook (introdu emailul și parola și finalizează login-ul).\n"
+            "3. După ce ești logat, pur și simplu închide fereastra de Chrome.\n\n"
+            "Nu trebuie să mai faci nimic în Facepost pentru acest pas.\n"
+            "La următoarele rulări, vei fi conectat automat în acest cont."
+        )
 
     # 1) Instrucțiuni ÎNAINTE de deschiderea Chrome
     messagebox.showinfo(
         APP_NAME,
-        "Vom configura logarea în Facebook.\n\n"
-        "1. După ce apeși OK, se va deschide o fereastră de Chrome cu profilul Facepost.\n"
-        "2. Conectează-te în contul tău de Facebook (introdu emailul și parola și finalizează login-ul).\n"
-        "3. După ce ești logat, pur și simplu închide fereastra de Chrome.\n\n"
-        "Nu trebuie să mai faci nimic în Facepost pentru acest pas.",
+        instr,
         parent=parent,
     )
 
-    # 2) Abia acum pornim Chrome cu profilul Facepost
+    # Dacă aveam deja un driver de login deschis, încercăm să îl închidem curat
+    if LOGIN_DRIVER is not None:
+        try:
+            LOGIN_DRIVER.quit()
+        except Exception:
+            pass
+        LOGIN_DRIVER = None
+
+    # 2) Pornim Chrome cu profilul Facepost
     try:
         driver = create_driver()
     except WebDriverException as e:
@@ -216,7 +243,10 @@ def configure_facebook_login(parent: tk.Tk | None = None):
         )
         return
 
-    # 3) Deschidem Facebook pentru login, fără alte pop-up-uri
+    # ținem driverul într-o variabilă globală ca să NU fie închis de GC
+    LOGIN_DRIVER = driver
+
+    # 3) Deschidem Facebook pentru login/schimbare profil
     try:
         driver.get("https://www.facebook.com/")
     except Exception as e:
@@ -225,15 +255,16 @@ def configure_facebook_login(parent: tk.Tk | None = None):
             f"A apărut o eroare la deschiderea Facebook.\n\n{e}",
             parent=parent,
         )
-        # dacă a murit ceva grav, închidem driverul
+        # dacă a murit ceva grav, închidem driverul și resetăm globalul
         try:
             driver.quit()
         except Exception:
             pass
+        LOGIN_DRIVER = None
         return
 
     # NU mai afișăm alt mesaj aici; userul lucrează liniștit în Chrome,
-    # se loghează și când termină închide fereastra de Chrome.
+    # se loghează (sau schimbă profilul) și când termină închide fereastra de Chrome.
 
 def wait_for_facebook_home(driver: webdriver.Chrome, timeout: int = 60):
     WebDriverWait(driver, timeout).until(
@@ -856,12 +887,20 @@ class FacepostApp:
             config_frame, text="Salvează config", command=self.save_config_clicked
         ).grid(row=0, column=2, padx=5)
 
+        # Buton 1: conectare inițială / login normal
         tk.Button(
             config_frame,
-            text="Configurează login Facebook",
-            command=lambda: configure_facebook_login(self.root),
+            text="Conectează-te la Facebook",
+            command=lambda: configure_facebook_login(self.root, mode="login"),
         ).grid(row=0, column=3, padx=5)
 
+        # Buton 2: schimbare profil Facebook
+        tk.Button(
+            config_frame,
+            text="Schimbă profilul de Facebook",
+            command=lambda: configure_facebook_login(self.root, mode="switch"),
+        ).grid(row=1, column=3, padx=5, pady=5)
+        
         self.license_status_var = tk.StringVar(value="Status licență necunoscut.")
         tk.Button(
             config_frame, text="Check licență", command=self.check_license_clicked
@@ -1478,6 +1517,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
