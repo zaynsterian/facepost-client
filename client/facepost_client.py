@@ -1391,6 +1391,23 @@ class FacepostApp:
             if val in self.images:
                 self.images.remove(val)
 
+    def clear_all_images(self):
+        """Șterge toate imaginile din listă și din setul intern."""
+        if not self.images:
+            return
+
+        # Dacă vrei confirmare, păstrezi blocul următor;
+        # dacă nu, poți șterge complet acest if.
+        if not messagebox.askyesno(
+            APP_NAME,
+            "Ești sigur că vrei să ștergi toate imaginile din postare?",
+            parent=self.root,
+        ):
+            return
+
+        self.images.clear()
+        self.images_listbox.delete(0, "end")
+    
     # ---------- run logic ----------
 
     def run_now(self, simulate: bool | None = None, from_scheduler: bool = False):
@@ -1531,6 +1548,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
