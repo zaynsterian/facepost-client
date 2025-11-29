@@ -877,6 +877,9 @@ class FacepostApp:
         # Config licență (sus) + buton Facebook login
         config_frame = tk.LabelFrame(main_frame, text="Config licență")
         config_frame.pack(fill="x", pady=5)
+        # coloana cu entry + coloana cu status să se poată întinde
+        config_frame.grid_columnconfigure(1, weight=1)
+        config_frame.grid_columnconfigure(2, weight=1)
 
         tk.Label(config_frame, text="Email licență:").grid(row=0, column=0, sticky="w")
         tk.Entry(config_frame, textvariable=self.email_var, width=40).grid(
@@ -899,18 +902,24 @@ class FacepostApp:
             config_frame,
             text="Schimbă profilul de Facebook",
             command=lambda: configure_facebook_login(self.root, mode="switch"),
-        ).grid(row=1, column=3, padx=5, pady=5)
-        
+        ).grid(row=1, column=3, padx=5, pady=5, sticky="e")
+
         self.license_status_var = tk.StringVar(value="Status licență necunoscut.")
+
         tk.Button(
             config_frame, text="Check licență", command=self.check_license_clicked
-        ).grid(row=1, column=0, pady=5)
+        ).grid(row=1, column=0, pady=5, sticky="w")
+
         tk.Button(
             config_frame, text="Bind licență", command=self.bind_license_clicked
-        ).grid(row=1, column=1, pady=5)
-        tk.Label(config_frame, textvariable=self.license_status_var, fg="blue").grid(
-            row=1, column=2, columnspan=2, sticky="w"
-        )
+        ).grid(row=1, column=1, pady=5, sticky="w")
+
+        tk.Label(
+            config_frame,
+            textvariable=self.license_status_var,
+            fg="blue",
+            anchor="w",
+        ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(0, 3))
 
         # Conținut postare
         post_frame = tk.LabelFrame(main_frame, text="Conținut postare")
