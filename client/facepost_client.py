@@ -877,50 +877,56 @@ class FacepostApp:
         # Config licență (sus) + buton Facebook login
         config_frame = tk.LabelFrame(main_frame, text="Config licență")
         config_frame.pack(fill="x", pady=5)
-        # coloana cu entry + coloana cu status să se poată întinde
-        config_frame.grid_columnconfigure(1, weight=1)
-        config_frame.grid_columnconfigure(2, weight=1)
 
-        tk.Label(config_frame, text="Email licență:").grid(row=0, column=0, sticky="w")
-        tk.Entry(config_frame, textvariable=self.email_var, width=40).grid(
-            row=0, column=1, sticky="w"
-        )
+        # stânga: email + check + bind + status
+        left_cfg = tk.Frame(config_frame)
+        left_cfg.pack(side="left", fill="x", expand=True)
 
-        tk.Button(
-            config_frame, text="Salvează config", command=self.save_config_clicked
-        ).grid(row=0, column=2, padx=5)
+        # dreapta: Salvează config + butoane Facebook, grupate compact
+        right_cfg = tk.Frame(config_frame)
+        right_cfg.pack(side="right", anchor="ne")
 
-        # Buton 1: conectare inițială / login normal
-        tk.Button(
-            config_frame,
-            text="Conectează-te la Facebook",
-            command=lambda: configure_facebook_login(self.root, mode="login"),
-        ).grid(row=0, column=3, padx=5)
+        # ---- LEFT (grid) ----
+        tk.Label(left_cfg, text="Email licență:").grid(row=0, column=0, sticky="w")
 
-        # Buton 2: schimbare profil Facebook
-        tk.Button(
-            config_frame,
-            text="Schimbă profilul de Facebook",
-            command=lambda: configure_facebook_login(self.root, mode="switch"),
-        ).grid(row=1, column=3, padx=5, pady=5, sticky="e")
+        email_entry = tk.Entry(left_cfg, textvariable=self.email_var, width=40)
+        email_entry.grid(row=0, column=1, sticky="we", padx=(0, 5))
 
-        self.license_status_var = tk.StringVar(value="Status licență necunoscut.")
+        left_cfg.grid_columnconfigure(1, weight=1)
 
         tk.Button(
-            config_frame, text="Check licență", command=self.check_license_clicked
+            left_cfg, text="Check licență", command=self.check_license_clicked
         ).grid(row=1, column=0, pady=5, sticky="w")
 
         tk.Button(
-            config_frame, text="Bind licență", command=self.bind_license_clicked
+            left_cfg, text="Bind licență", command=self.bind_license_clicked
         ).grid(row=1, column=1, pady=5, sticky="w")
 
+        self.license_status_var = tk.StringVar(value="Status licență necunoscut.")
         tk.Label(
-            config_frame,
+            left_cfg,
             textvariable=self.license_status_var,
             fg="blue",
             anchor="w",
-        ).grid(row=2, column=0, columnspan=4, sticky="w", pady=(0, 3))
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 3))
 
+        # ---- RIGHT (vertical pack) ----
+        tk.Button(
+            right_cfg, text="Salvează config", command=self.save_config_clicked
+        ).pack(fill="x", pady=(0, 2))
+
+        tk.Button(
+            right_cfg,
+            text="Conectează-te la Facebook",
+            command=lambda: configure_facebook_login(self.root, mode="login"),
+        ).pack(fill="x", pady=(0, 2))
+
+        tk.Button(
+            right_cfg,
+            text="Schimbă profilul de Facebook",
+            command=lambda: configure_facebook_login(self.root, mode="switch"),
+        ).pack(fill="x")
+        
         # Conținut postare
         post_frame = tk.LabelFrame(main_frame, text="Conținut postare")
         post_frame.pack(fill="both", expand=True, pady=5)
@@ -1557,6 +1563,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
