@@ -930,11 +930,25 @@ class FacepostApp:
         tk.Button(
             images_frame, text="Adaugă imagini", command=self.add_images_clicked
         ).pack(side="left")
+
         self.images_listbox = tk.Listbox(images_frame, height=4)
         self.images_listbox.pack(side="left", fill="x", expand=True, padx=5)
+
+        # Frame pentru butoanele de ștergere (vertical: sus "Șterge imaginea", jos "Șterge tot")
+        images_buttons_frame = tk.Frame(images_frame)
+        images_buttons_frame.pack(side="left", padx=5)
+
         tk.Button(
-            images_frame, text="Șterge selectat", command=self.remove_selected_image
-        ).pack(side="left")
+            images_buttons_frame,
+            text="Șterge imaginea",
+            command=self.remove_selected_image,
+        ).pack(fill="x", pady=(0, 3))
+
+        tk.Button(
+            images_buttons_frame,
+            text="Șterge tot",
+            command=self.clear_all_images,
+        ).pack(fill="x")
 
         delay_frame = tk.Frame(post_frame)
         delay_frame.pack(fill="x", pady=5)
@@ -1517,6 +1531,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
