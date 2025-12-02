@@ -31,7 +31,7 @@ API_URL = "https://facepost.onrender.com"
 CONFIG_FILE = Path.home() / ".facepost_config.json"
 CHROMEDRIVER_NAME = "chromedriver.exe"  # în același folder cu EXE-ul
 LOGIN_DRIVER: webdriver.Chrome | None = None
-CLIENT_VERSION = "2.2.0"
+CLIENT_VERSION = "2.3.0"
 
 UTC = timezone.utc
 
@@ -1848,6 +1848,7 @@ if __name__ == "__main__":
         run_self_updater()
     else:
         main()
+
 
 
 
