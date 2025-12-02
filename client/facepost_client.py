@@ -7,6 +7,10 @@ import hashlib
 from pathlib import Path
 from datetime import datetime, timedelta, time as dtime, timezone
 import platform
+import tempfile
+import shutil
+import webbrowser
+import subprocess
 
 import requests
 import tkinter as tk
@@ -27,6 +31,7 @@ API_URL = "https://facepost.onrender.com"
 CONFIG_FILE = Path.home() / ".facepost_config.json"
 CHROMEDRIVER_NAME = "chromedriver.exe"  # în același folder cu EXE-ul
 LOGIN_DRIVER: webdriver.Chrome | None = None
+CLIENT_VERSION = "1.1.0"
 
 UTC = timezone.utc
 
@@ -796,6 +801,9 @@ class FacepostApp:
         self.images = set(CONFIG.get("images", []))
         self.scheduler_thread = None
         self.stop_event = None  # pentru a opri rularea curentă
+        # starea de update
+        self.update_info = None        # dict cu info despre update (dacă există)
+        self.update_pending = False    # dacă trebuie făcut update după runda curentă
 
         self.email_var = tk.StringVar(value=CONFIG.get("email", ""))
         self.delay_var = tk.StringVar(value=str(CONFIG.get("delay_seconds", 120)))
@@ -835,6 +843,11 @@ class FacepostApp:
         self._update_interval_button_text()
         self._update_run_button_text()
         self._start_scheduler_if_needed()
+
+        # pornim thread-ul care verifică periodic update-urile
+        threading.Thread(
+            target=self._update_watcher, daemon=True
+        ).start()
 
     # ---------- UI building ----------
 
@@ -1266,6 +1279,163 @@ class FacepostApp:
 
         save_config(CONFIG)
 
+        # ---------- LOGICA DE UPDATE AUTOMAT ----------
+
+    def _parse_version(self, v: str) -> tuple:
+        """Transformă '1.2.3' într-un tuplu (1,2,3) pentru comparații sigure."""
+        try:
+            return tuple(int(x) for x in v.strip().split("."))
+        except Exception:
+            return (0, 0, 0)
+
+    def _check_for_update_once(self) -> dict | None:
+        """
+        Face un singur request la backend și întoarce info despre update dacă există.
+        return:
+          None   -> nu există update sau eroare
+          dict   -> {"version": ..., "notes": ..., "download_url": ...}
+        """
+        server_base = CONFIG.get("server_url", API_URL).rstrip("/")
+
+        try:
+            r = requests.get(f"{server_base}/client-version", timeout=10)
+            data = r.json()
+        except Exception as e:
+            print("[UPDATE] Eroare la /client-version:", e)
+            return None
+
+        server_ver = str(data.get("version") or "").strip()
+        if not server_ver:
+            return None
+
+        if self._parse_version(server_ver) <= self._parse_version(CLIENT_VERSION):
+            # suntem la zi
+            return None
+
+        notes = data.get("notes", "")
+
+        # luăm URL-ul de download
+        try:
+            r2 = requests.get(f"{server_base}/client-download", timeout=10)
+            d2 = r2.json()
+            download_url = d2.get("url")
+        except Exception as e:
+            print("[UPDATE] Eroare la /client-download:", e)
+            return None
+
+        if not download_url:
+            return None
+
+        print(f"[UPDATE] Disponibilă versiunea {server_ver}")
+        return {
+            "version": server_ver,
+            "notes": notes,
+            "download_url": download_url,
+        }
+
+    def _update_watcher(self):
+        """
+        Verifică o dată la 24h dacă există versiune nouă.
+        Dacă găsește update și nu rulează nimic, declanșează direct self-update.
+        Dacă rulează ceva, setează update_pending și va fi tratat la finalul task-ului.
+        """
+        while True:
+            try:
+                now = datetime.now()
+                last_check_iso = CONFIG.get("last_update_check")
+                if last_check_iso:
+                    try:
+                        last_check = datetime.fromisoformat(last_check_iso)
+                    except Exception:
+                        last_check = now - timedelta(days=2)
+                else:
+                    last_check = now - timedelta(days=2)
+
+                # dacă au trecut deja 24h de la ultimul check, verificăm
+                if (now - last_check) >= timedelta(hours=24):
+                    info = self._check_for_update_once()
+                    CONFIG["last_update_check"] = now.isoformat()
+                    save_config(CONFIG)
+
+                    if info is not None:
+                        # avem versiune nouă
+                        self.update_info = info
+                        if not self.is_running:
+                            # nu rulează nimic -> putem lansa direct updater-ul
+                            self.root.after(0, self._trigger_auto_update)
+                        else:
+                            # există task în curs, îl facem după ce se termină
+                            print("[UPDATE] Update găsit, îl fac după terminarea rundei.")
+                            self.update_pending = True
+
+                # nu vrem să spamăm API-ul – verificăm maxim o dată pe oră
+                time.sleep(3600)
+            except Exception as e:
+                print("[UPDATE] Eroare în update_watcher:", e)
+                time.sleep(3600)
+
+    def _trigger_auto_update(self):
+        """Cheamă start_self_update dacă avem info validă despre update."""
+        if not self.update_info:
+            return
+        try:
+            self._start_self_update()
+        except Exception as e:
+            print("[UPDATE] Eroare la pornirea self-update:", e)
+
+    def _start_self_update(self):
+        """
+        Creează o copie temporară a exe-ului curent și o pornește în modul '--self-update'.
+        Instanța curentă de Facepost se va închide, iar copia va înlocui exe-ul și va porni noua versiune.
+        """
+        info = self.update_info
+        if info is None:
+            return
+
+        download_url = info["download_url"]
+        target_ver = info["version"]
+
+        # Dacă rulăm din surse (.py), nu încercăm self-update – doar deschidem linkul
+        if not getattr(sys, "frozen", False):
+            print("[UPDATE] Rulezi din surse (nu exe). Deschid linkul de download.")
+            webbrowser.open(download_url)
+            return
+
+        exe_path = Path(sys.executable).resolve()
+
+        # copie temporară care va rula ca updater
+        tmp_dir = Path(tempfile.gettempdir())
+        tmp_exe = tmp_dir / "facepost_self_updater.exe"
+
+        try:
+            shutil.copy2(exe_path, tmp_exe)
+        except Exception as e:
+            print("[UPDATE] Nu pot copia exe-ul curent în TEMP:", e)
+            # fallback: măcar deschidem linkul
+            webbrowser.open(download_url)
+            return
+
+        args = [
+            str(tmp_exe),
+            "--self-update",
+            "--target",
+            str(exe_path),
+            "--url",
+            download_url,
+            "--version",
+            target_ver,
+        ]
+        print("[UPDATE] Pornez self-updater-ul:", args)
+
+        try:
+            subprocess.Popen(args, close_fds=True)
+        except Exception as e:
+            print("[UPDATE] Eroare la lansarea self-updater-ului:", e)
+            return
+
+        # închidem UI-ul ca updater-ul să poată lucra liniștit
+        self.root.after(200, self.root.destroy)
+
     # ---------- acțiuni licență ----------
 
     def check_license_clicked(self):
@@ -1552,8 +1722,119 @@ class FacepostApp:
             self.stop_event = None
             self._update_run_button_text()
 
+            # dacă există un update în așteptare, îl declanșăm acum
+            if self.update_pending and self.update_info is not None:
+                print("[UPDATE] Runda s-a terminat, lansez self-update.")
+                self.update_pending = False
+                # trebuie făcut în thread-ul principal Tk
+                self.root.after(0, self._trigger_auto_update)
 
 # ================== MAIN ==================
+
+def run_self_updater():
+    """
+    Rulat din copia temporară (facepost_self_updater.exe) cu flagul --self-update.
+    Scop:
+      - așteaptă închiderea exe-ului original
+      - descarcă noua versiune
+      - înlocuiește Facepost.exe
+      - pornește noua versiune
+    """
+    print("[SELF-UPDATE] Pornit cu argv:", sys.argv)
+    argv = sys.argv[1:]
+    target = None
+    url = None
+    version = None
+
+    i = 0    # mic parser simplu pentru --target / --url / --version
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--self-update":
+            i += 1
+        elif arg == "--target" and i + 1 < len(argv):
+            target = Path(argv[i + 1])
+            i += 2
+        elif arg == "--url" and i + 1 < len(argv):
+            url = argv[i + 1]
+            i += 2
+        elif arg == "--version" and i + 1 < len(argv):
+            version = argv[i + 1]
+            i += 2
+        else:
+            i += 1
+
+    if not target or not url:
+        print("[SELF-UPDATE] Lipsesc parametrii target/url. Ies.")
+        if url:
+            webbrowser.open(url)
+        return
+
+    # 1) așteptăm ca exe-ul țintă să fie liber (să se fi închis Facepost-ul original)
+    for _ in range(60):
+        try:
+            with open(target, "rb+"):
+                break
+        except OSError:
+            time.sleep(1)
+    else:
+        print("[SELF-UPDATE] Nu pot obține acces la fișierul țintă. Renunț.")
+        return
+
+    # 2) descărcăm noua versiune într-un fișier temporar
+    try:
+        tmp_dir = Path(tempfile.gettempdir())
+        download_path = tmp_dir / f"facepost_update_{int(time.time())}.exe"
+        print(f"[SELF-UPDATE] Descarc noua versiune în {download_path}")
+        with requests.get(url, stream=True, timeout=60) as r:
+            r.raise_for_status()
+            with open(download_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+    except Exception as e:
+        print("[SELF-UPDATE] Eroare la descărcare:", e)
+        # fallback: deschidem linkul în browser
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+        return
+
+    # 3) backup la exe-ul vechi (opțional)
+    try:
+        backup_path = target.with_suffix(target.suffix + ".old")
+        try:
+            if backup_path.exists():
+                backup_path.unlink()
+        except Exception:
+            pass
+
+        try:
+            shutil.move(str(target), str(backup_path))
+            print(f"[SELF-UPDATE] Am mutat vechiul exe la {backup_path}")
+        except Exception as e:
+            print("[SELF-UPDATE] Nu pot muta exe-ul vechi:", e)
+    except Exception as e:
+        print("[SELF-UPDATE] Eroare la backup:", e)
+
+    # 4) mutăm noul exe pe poziția țintă
+    try:
+        shutil.move(str(download_path), str(target))
+        print("[SELF-UPDATE] Noul exe a fost copiat peste țintă.")
+    except Exception as e:
+        print("[SELF-UPDATE] Nu pot muta noul exe peste țintă:", e)
+        return
+
+    # 5) pornim Facepost nou
+    try:
+        print("[SELF-UPDATE] Pornez noul Facepost:", target)
+        subprocess.Popen([str(target)], close_fds=True)
+    except Exception as e:
+        print("[SELF-UPDATE] Nu pot porni noul Facepost:", e)
+        return
+
+    # nu încercăm să ștergem self_updater-ul din TEMP (Windows nu te lasă să-ți ștergi propriul exe în execuție)
+    print("[SELF-UPDATE] Gata, ies.")
 
 def main():
     root = tk.Tk()
@@ -1562,7 +1843,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # dacă a fost pornit cu --self-update, rulăm logica de updater și NU deschidem UI-ul
+    if "--self-update" in sys.argv:
+        run_self_updater()
+    else:
+        main()
 
 
 
