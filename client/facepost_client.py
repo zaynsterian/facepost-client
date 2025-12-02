@@ -908,11 +908,11 @@ class FacepostApp:
         left_cfg.grid_columnconfigure(1, weight=1)
 
         tk.Button(
-            left_cfg, text="Check licență", command=self.check_license_clicked
+            left_cfg, text="Verifică licență", command=self.check_license_clicked
         ).grid(row=1, column=0, pady=5, sticky="w")
 
         tk.Button(
-            left_cfg, text="Bind licență", command=self.bind_license_clicked
+            left_cfg, text="Activează licență", command=self.bind_license_clicked
         ).grid(row=1, column=1, pady=5, sticky="w")
 
         self.license_status_var = tk.StringVar(value="Status licență necunoscut.")
@@ -1848,6 +1848,7 @@ if __name__ == "__main__":
         run_self_updater()
     else:
         main()
+
 
 
 
