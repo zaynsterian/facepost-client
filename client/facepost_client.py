@@ -851,226 +851,484 @@ class FacepostApp:
 
     # ---------- UI building ----------
 
+    # ---------- UI building ----------
+
     def _build_ui(self):
         root = self.root
-        root.geometry("900x720")
+        root.geometry("960x720")
+        root.configure(bg=COLORS["bg"])
+        root.option_add("*Font", "Segoe UI 9")
 
-        # Container cu Canvas + Scrollbar pentru conținut scrollabil
-        container = tk.Frame(root)
+        # ====== Container scrollabil ======
+        container = tk.Frame(root, bg=COLORS["bg"])
         container.pack(fill="both", expand=True, padx=10, pady=10)
 
-        canvas = tk.Canvas(container)
+        canvas = tk.Canvas(
+            container,
+            bg=COLORS["bg"],
+            highlightthickness=0,
+            borderwidth=0,
+        )
         canvas.pack(side="left", fill="both", expand=True)
 
         scrollbar = tk.Scrollbar(container, orient="vertical", command=canvas.yview)
         scrollbar.pack(side="right", fill="y")
-
         canvas.configure(yscrollcommand=scrollbar.set)
 
-        main_frame = tk.Frame(canvas)
+        main_frame = tk.Frame(canvas, bg=COLORS["bg"])
         frame_id = canvas.create_window((0, 0), window=main_frame, anchor="nw")
 
-        # scrollregion + lățimea frame-ului
         def _on_frame_config(event):
             canvas.configure(scrollregion=canvas.bbox("all"))
 
         def _on_canvas_config(event):
-            # facem main_frame să aibă lățimea canvas-ului → nu mai apare banda gri
             canvas.itemconfig(frame_id, width=event.width)
 
         main_frame.bind("<Configure>", _on_frame_config)
         canvas.bind("<Configure>", _on_canvas_config)
 
-        # scroll cu rotița mouse-ului (Windows)
         def _on_mousewheel(event):
             canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
         canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
-        # Config licență (sus) + buton Facebook login
-        config_frame = tk.LabelFrame(main_frame, text="Config licență")
-        config_frame.pack(fill="x", pady=5)
+        # ====== Helper pentru carduri ======
+        def create_card(parent, title: str, expand: bool = False):
+            wrapper = tk.Frame(parent, bg=COLORS["bg"])
+            wrapper.pack(fill="x", pady=6)
 
-        # stânga: email + check + bind + status
-        left_cfg = tk.Frame(config_frame)
-        left_cfg.pack(side="left", fill="x", expand=True)
+            title_lbl = tk.Label(
+                wrapper,
+                text=title,
+                font=("Segoe UI", 10, "bold"),
+                fg=COLORS["text"],
+                bg=COLORS["bg"],
+            )
+            title_lbl.pack(anchor="w", pady=(0, 2))
 
-        # dreapta: Salvează config + butoane Facebook, grupate compact
-        right_cfg = tk.Frame(config_frame)
-        right_cfg.pack(side="right", anchor="ne")
+            card = tk.Frame(
+                wrapper,
+                bg=COLORS["card"],
+                bd=0,
+                highlightbackground=COLORS["border"],
+                highlightthickness=1,
+            )
+            card.pack(fill="x", expand=expand, padx=0, pady=0)
+            return card
 
-        # ---- LEFT (grid) ----
-        tk.Label(left_cfg, text="Email licență:").grid(row=0, column=0, sticky="w")
+        # ====== HEADER ======
+        header = tk.Frame(
+            main_frame,
+            bg=COLORS["card"],
+            bd=0,
+            highlightbackground=COLORS["border"],
+            highlightthickness=1,
+        )
+        header.pack(fill="x", pady=(0, 8))
 
-        email_entry = tk.Entry(left_cfg, textvariable=self.email_var, width=40)
-        email_entry.grid(row=0, column=1, sticky="we", padx=(0, 5))
+        header_left = tk.Frame(header, bg=COLORS["card"])
+        header_left.pack(side="left", fill="x", expand=True, padx=16, pady=10)
 
-        left_cfg.grid_columnconfigure(1, weight=1)
-
-        tk.Button(
-            left_cfg, text="Verifică licență", command=self.check_license_clicked
-        ).grid(row=1, column=0, pady=5, sticky="w")
-
-        tk.Button(
-            left_cfg, text="Activează licență", command=self.bind_license_clicked
-        ).grid(row=1, column=1, pady=5, sticky="w")
-
-        self.license_status_var = tk.StringVar(value="Status licență necunoscut.")
         tk.Label(
-            left_cfg,
+            header_left,
+            text="Facepost",
+            font=("Segoe UI", 16, "bold"),
+            fg=COLORS["text"],
+            bg=COLORS["card"],
+        ).pack(anchor="w")
+
+        tk.Label(
+            header_left,
+            text="Facebook group poster",
+            font=("Segoe UI", 9),
+            fg=COLORS["muted"],
+            bg=COLORS["card"],
+        ).pack(anchor="w")
+
+        # (spațiu pentru un mic badge de versiune, dacă vrei mai târziu)
+
+        # ====== CARD: Configurare licență ======
+        config_card = create_card(main_frame, "Configurare licență")
+        self.license_card = config_card          # referință pentru colorare
+        config_card.grid_columnconfigure(1, weight=1)
+
+        tk.Label(
+            config_card,
+            text="Email",
+            bg=COLORS["card"],
+            fg=COLORS["text"],
+        ).grid(row=0, column=0, sticky="w", padx=16, pady=(12, 4))
+
+        email_entry = tk.Entry(
+            config_card,
+            textvariable=self.email_var,
+            width=40,
+        )
+        email_entry.grid(
+            row=0,
+            column=1,
+            columnspan=2,
+            sticky="we",
+            padx=(0, 16),
+            pady=(12, 4),
+        )
+
+        check_btn = tk.Button(
+            config_card,
+            text="Verifică licența",
+            command=self.check_license_clicked,
+            bg=COLORS["accent"],
+            fg="white",
+            activebackground="#6944c4",
+            activeforeground="white",
+            relief="flat",
+            padx=10,
+            pady=6,
+            borderwidth=0,
+        )
+        check_btn.grid(row=1, column=0, sticky="w", padx=16, pady=4)
+
+        bind_btn = tk.Button(
+            config_card,
+            text="Activează licența",
+            command=self.bind_license_clicked,
+            bg=COLORS["accent"],
+            fg="white",
+            activebackground="#6944c4",
+            activeforeground="white",
+            relief="flat",
+            padx=10,
+            pady=6,
+            borderwidth=0,
+        )
+        bind_btn.grid(row=1, column=1, sticky="w", pady=4)
+
+        # Status licență (text + styling dinamic)
+        self.license_status_var = tk.StringVar(
+            value="Status licență necunoscut."
+        )
+        self.license_status_var.trace_add("write", self._on_license_status_changed)
+
+        self.license_status_label = tk.Label(
+            config_card,
             textvariable=self.license_status_var,
-            fg="blue",
+            fg=COLORS["muted"],
+            bg=COLORS["card"],
             anchor="w",
-        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(0, 3))
+            justify="left",
+            wraplength=600,
+        )
+        self.license_status_label.grid(
+            row=2,
+            column=0,
+            columnspan=3,
+            sticky="we",
+            padx=16,
+            pady=(4, 12),
+        )
 
-        # ---- RIGHT (vertical pack) ----
-        tk.Button(
-            right_cfg, text="Salvează config", command=self.save_config_clicked
-        ).pack(fill="x", pady=(0, 2))
+        # aplicăm stil inițial
+        self._on_license_status_changed()
+
+        # ====== CARD: Conectare Facebook ======
+        fb_card = create_card(main_frame, "Conectare Facebook")
+        fb_btns = tk.Frame(fb_card, bg=COLORS["card"])
+        fb_btns.pack(fill="x", padx=16, pady=12)
 
         tk.Button(
-            right_cfg,
+            fb_btns,
             text="Conectează-te la Facebook",
             command=lambda: configure_facebook_login(self.root, mode="login"),
-        ).pack(fill="x", pady=(0, 2))
+            bg=COLORS["card"],
+            fg=COLORS["text"],
+            relief="ridge",
+            padx=10,
+            pady=6,
+        ).pack(side="left")
 
         tk.Button(
-            right_cfg,
+            fb_btns,
             text="Schimbă profilul de Facebook",
             command=lambda: configure_facebook_login(self.root, mode="switch"),
-        ).pack(fill="x")
-        
-        # Conținut postare
-        post_frame = tk.LabelFrame(main_frame, text="Conținut postare")
-        post_frame.pack(fill="both", expand=True, pady=5)
+            bg=COLORS["card"],
+            fg=COLORS["text"],
+            relief="ridge",
+            padx=10,
+            pady=6,
+        ).pack(side="left", padx=(8, 0))
 
-        tk.Label(post_frame, text="Text postare:").pack(anchor="w")
-        self.post_text = tk.Text(post_frame, height=8)
-        self.post_text.pack(fill="x", pady=3)
+        # ====== CARD: Conținut postare ======
+        post_card = create_card(main_frame, "Conținut postare", expand=True)
 
-        tk.Label(post_frame, text="Linkuri grupuri (unul pe linie):").pack(anchor="w")
-        self.group_text = tk.Text(post_frame, height=8)
-        self.group_text.pack(fill="x", pady=3)
+        # Text postare
+        tk.Label(
+            post_card,
+            text="Text postare:",
+            bg=COLORS["card"],
+            fg=COLORS["text"],
+        ).pack(anchor="w", padx=16, pady=(12, 2))
 
-        images_frame = tk.Frame(post_frame)
-        images_frame.pack(fill="x", pady=5)
+        self.post_text = tk.Text(post_card, height=8)
+        self.post_text.pack(fill="x", padx=16, pady=(0, 2))
+
+        # contor caractere + linii
+        self.post_stats_var = tk.StringVar(value="0 caractere, 0 linii")
+        self.post_stats_label = tk.Label(
+            post_card,
+            textvariable=self.post_stats_var,
+            fg=COLORS["muted"],
+            bg=COLORS["card"],
+            font=("Segoe UI", 8),
+        )
+        self.post_stats_label.pack(anchor="e", padx=16, pady=(0, 8))
+
+        # Linkuri grupuri
+        tk.Label(
+            post_card,
+            text="Linkuri grupuri (unul pe linie):",
+            bg=COLORS["card"],
+            fg=COLORS["text"],
+        ).pack(anchor="w", padx=16, pady=(4, 2))
+
+        self.group_text = tk.Text(post_card, height=8)
+        self.group_text.pack(fill="x", padx=16, pady=(0, 2))
+
+        # contor număr de grupuri
+        self.groups_stats_var = tk.StringVar(value="0 grupuri introduse")
+        self.groups_stats_label = tk.Label(
+            post_card,
+            textvariable=self.groups_stats_var,
+            fg=COLORS["muted"],
+            bg=COLORS["card"],
+            font=("Segoe UI", 8),
+        )
+        self.groups_stats_label.pack(anchor="e", padx=16, pady=(0, 8))
+
+        # Imagini atașate
+        images_frame = tk.Frame(post_card, bg=COLORS["card"])
+        images_frame.pack(fill="x", padx=16, pady=8)
 
         tk.Button(
-            images_frame, text="Adaugă imagini", command=self.add_images_clicked
+            images_frame,
+            text="Adaugă imagini",
+            command=self.add_images_clicked,
+            bg=COLORS["card"],
+            fg=COLORS["text"],
+            relief="ridge",
+            padx=8,
+            pady=4,
         ).pack(side="left")
 
         self.images_listbox = tk.Listbox(images_frame, height=4)
-        self.images_listbox.pack(side="left", fill="x", expand=True, padx=5)
+        self.images_listbox.pack(side="left", fill="x", expand=True, padx=8)
 
-        # Frame pentru butoanele de ștergere (vertical: sus "Șterge imaginea", jos "Șterge tot")
-        images_buttons_frame = tk.Frame(images_frame)
-        images_buttons_frame.pack(side="left", padx=5)
+        images_buttons_frame = tk.Frame(images_frame, bg=COLORS["card"])
+        images_buttons_frame.pack(side="left")
 
         tk.Button(
             images_buttons_frame,
             text="Șterge imaginea",
             command=self.remove_selected_image,
+            padx=8,
+            pady=3,
         ).pack(fill="x", pady=(0, 3))
 
         tk.Button(
             images_buttons_frame,
             text="Șterge tot",
             command=self.clear_all_images,
+            padx=8,
+            pady=3,
         ).pack(fill="x")
 
-        delay_frame = tk.Frame(post_frame)
-        delay_frame.pack(fill="x", pady=5)
+        # Delay + Simulare
+        delay_frame = tk.Frame(post_card, bg=COLORS["card"])
+        delay_frame.pack(fill="x", padx=16, pady=(4, 12))
 
-        tk.Label(delay_frame, text="Delay între grupuri (secunde):").pack(side="left")
-        tk.Entry(delay_frame, textvariable=self.delay_var, width=6).pack(
-            side="left", padx=5
-        )
+        tk.Label(
+            delay_frame,
+            text="Delay între grupuri (secunde):",
+            bg=COLORS["card"],
+            fg=COLORS["text"],
+        ).pack(side="left")
+
+        tk.Entry(
+            delay_frame,
+            textvariable=self.delay_var,
+            width=6,
+        ).pack(side="left", padx=5)
+
         tk.Checkbutton(
             delay_frame,
             text="Simulare (nu posta efectiv)",
             variable=self.simulate_var,
+            bg=COLORS["card"],
+            activebackground=COLORS["card"],
         ).pack(side="left", padx=10)
 
-        # Programare automată zilnică
-        schedule_frame = tk.LabelFrame(main_frame, text="Programare automată zilnică")
-        schedule_frame.pack(fill="x", pady=5)
+        # bind-uri pentru actualizarea contorilor
+        self.post_text.bind("<<Modified>>", self._on_post_text_modified)
+        self.group_text.bind("<<Modified>>", self._on_group_text_modified)
+        
+        # ====== CARD: Programare automată zilnică ======
+        schedule_card = create_card(main_frame, "Programare automată zilnică")
+        schedule_card.grid_columnconfigure(1, weight=1)
 
         tk.Checkbutton(
-            schedule_frame,
+            schedule_card,
             text="Rulează dimineața la ora:",
             variable=self.schedule_enabled_morning_var,
             command=self.schedule_changed,
-        ).grid(row=0, column=0, sticky="w")
+            bg=COLORS["card"],
+            activebackground=COLORS["card"],
+        ).grid(row=0, column=0, sticky="w", padx=16, pady=(10, 4))
         tk.Entry(
-            schedule_frame, textvariable=self.schedule_time_morning_var, width=6
-        ).grid(row=0, column=1, sticky="w")
+            schedule_card,
+            textvariable=self.schedule_time_morning_var,
+            width=6,
+        ).grid(row=0, column=1, sticky="w", pady=(10, 4))
 
         tk.Checkbutton(
-            schedule_frame,
+            schedule_card,
             text="Rulează seara la ora:",
             variable=self.schedule_enabled_evening_var,
             command=self.schedule_changed,
-        ).grid(row=1, column=0, sticky="w")
+            bg=COLORS["card"],
+            activebackground=COLORS["card"],
+        ).grid(row=1, column=0, sticky="w", padx=16, pady=4)
         tk.Entry(
-            schedule_frame, textvariable=self.schedule_time_evening_var, width=6
-        ).grid(row=1, column=1, sticky="w")
+            schedule_card,
+            textvariable=self.schedule_time_evening_var,
+            width=6,
+        ).grid(row=1, column=1, sticky="w", pady=4)
 
-        # buton start/stop pentru programarea zilnică
         self.daily_button = tk.Button(
-            schedule_frame,
-            text="Pornește programarea zilnică",  # textul va fi actualizat din _update_daily_button_text
+            schedule_card,
+            text="Pornește programarea zilnică",
             command=self.toggle_daily_schedule,
             width=25,
+            bg=COLORS["accent_soft"],
+            fg=COLORS["text"],
+            relief="flat",
+            padx=8,
+            pady=4,
         )
-        self.daily_button.grid(row=2, column=0, columnspan=4, pady=(5, 0), sticky="w")
+        self.daily_button.grid(
+            row=2,
+            column=0,
+            columnspan=4,
+            sticky="w",
+            padx=16,
+            pady=(6, 12),
+        )
 
-        # Programare repetitivă
-        interval_frame = tk.LabelFrame(main_frame, text="Programare repetitivă")
-        interval_frame.pack(fill="x", pady=5)
+        # ====== CARD: Programare repetitivă ======
+        interval_card = create_card(main_frame, "Programare repetitivă")
+        interval_card.grid_columnconfigure(3, weight=1)
 
         tk.Checkbutton(
-            interval_frame,
+            interval_card,
             text="Rulează la fiecare:",
             variable=self.interval_enabled_var,
             command=self.schedule_changed,
-        ).grid(row=0, column=0, sticky="w")
+            bg=COLORS["card"],
+            activebackground=COLORS["card"],
+        ).grid(row=0, column=0, sticky="w", padx=16, pady=(10, 4))
 
         tk.Entry(
-            interval_frame,
+            interval_card,
             textvariable=self.interval_minutes_var,
             width=6,
-        ).grid(row=0, column=1, sticky="w")
-
-        tk.Label(interval_frame, text="minute").grid(row=0, column=2, sticky="w")
-
-        self.interval_button = tk.Button(
-            interval_frame,
-            text="Pornește repetarea",  # textul va fi actualizat din _update_interval_button_text
-            command=self.toggle_interval,
-            width=18,
-        )
-        self.interval_button.grid(row=0, column=3, padx=8, sticky="w")
+        ).grid(row=0, column=1, sticky="w", pady=(10, 4))
 
         tk.Label(
-            interval_frame,
-            text="(rulări repetate până apeși Oprește repetarea sau închizi aplicația)",
-            fg="gray",
-        ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(3, 0))
+            interval_card,
+            text="minute",
+            bg=COLORS["card"],
+        ).grid(row=0, column=2, sticky="w", pady=(10, 4))
 
-        # Bottom bar
-        bottom_frame = tk.Frame(main_frame)
-        bottom_frame.pack(fill="x", pady=10)
+        self.interval_button = tk.Button(
+            interval_card,
+            text="Pornește repetarea",
+            command=self.toggle_interval,
+            width=18,
+            bg=COLORS["accent_soft"],
+            fg=COLORS["text"],
+            relief="flat",
+            padx=8,
+            pady=4,
+        )
+        self.interval_button.grid(row=0, column=3, padx=8, sticky="w", pady=(10, 4))
+
+        tk.Label(
+            interval_card,
+            text="(rulări repetate până apeși Oprește repetarea sau închizi aplicația)",
+            fg=COLORS["muted"],
+            bg=COLORS["card"],
+        ).grid(
+            row=1,
+            column=0,
+            columnspan=4,
+            sticky="w",
+            padx=16,
+            pady=(0, 10),
+        )
+
+        # ====== BARĂ DE JOS (status + acțiuni) ======
+        bottom_wrapper = tk.Frame(main_frame, bg=COLORS["bg"])
+        bottom_wrapper.pack(fill="x", pady=(8, 0))
+
+        bottom_bar = tk.Frame(
+            bottom_wrapper,
+            bg=COLORS["card"],
+            bd=0,
+            highlightbackground=COLORS["border"],
+            highlightthickness=1,
+        )
+        bottom_bar.pack(fill="x")
+
+        left_bottom = tk.Frame(bottom_bar, bg=COLORS["card"])
+        left_bottom.pack(side="left", fill="x", expand=True, padx=16, pady=8)
+
+        right_bottom = tk.Frame(bottom_bar, bg=COLORS["card"])
+        right_bottom.pack(side="right", padx=16, pady=8)
 
         self.status_var = tk.StringVar(value="Gata de lucru.")
-        tk.Label(bottom_frame, textvariable=self.status_var, fg="green").pack(
-            side="left"
+        tk.Label(
+            left_bottom,
+            textvariable=self.status_var,
+            fg=COLORS["ok"],
+            bg=COLORS["card"],
+        ).pack(anchor="w")
+
+        save_btn = tk.Button(
+            right_bottom,
+            text="Salvează config",
+            command=self.save_config_clicked,
+            bg=COLORS["card"],
+            fg=COLORS["text"],
+            relief="ridge",
+            padx=10,
+            pady=6,
         )
+        save_btn.pack(side="right")
 
         self.run_btn = tk.Button(
-            bottom_frame, text="Postează acum", command=self.run_now_clicked
+            right_bottom,
+            text="Postează acum",
+            command=self.run_now_clicked,
+            bg=COLORS["accent"],
+            fg="white",
+            activebackground="#6944c4",
+            activeforeground="white",
+            relief="flat",
+            padx=14,
+            pady=6,
+            borderwidth=0,
         )
-        self.run_btn.pack(side="right")
+        self.run_btn.pack(side="right", padx=(0, 8))
 
+        # inițializăm textele butoanelor
         self._update_daily_button_text()
         self._update_interval_button_text()
         self._update_run_button_text()
@@ -1087,6 +1345,10 @@ class FacepostApp:
         self.images_listbox.delete(0, "end")
         for img in self.images:
             self.images_listbox.insert("end", img)
+
+        # actualizăm contorii în funcție de ce am încărcat din config
+        self._update_post_stats()
+        self._update_group_stats()
 
     def _start_scheduler_if_needed(self):
         if self.scheduler_thread is not None:
@@ -1113,11 +1375,105 @@ class FacepostApp:
         else:
             self.interval_button.config(text="Pornește repetarea")
 
+        def _on_license_status_changed(self, *args):
+        """Schimbă culoarea cardului de licență și a textului în funcție de mesaj."""
+        if not hasattr(self, "license_status_var"):
+            return
+
+        msg = self.license_status_var.get() or ""
+        low = msg.lower()
+
+        border = COLORS["border"]
+        fg = COLORS["muted"]
+
+        # verde = licență activă, ok
+        if "activă" in low and "trial" not in low and "apasă butonul" not in low:
+            border = COLORS["ok"]
+            fg = COLORS["ok"]
+
+        # portocaliu = trial / device nelegat (trebuie bind)
+        elif "trial" in low or "apasă butonul \"bind licență\"" in low:
+            border = COLORS["warn"]
+            fg = COLORS["warn"]
+
+        # roșu = expirat / suspendat / eroare / necunoscut
+        elif any(word in low for word in ("expirată", "suspendată", "eroare", "necunoscut", "invalidă")):
+            border = COLORS["danger"]
+            fg = COLORS["danger"]
+
+        # aplicăm culorile
+        if hasattr(self, "license_card"):
+            self.license_card.configure(
+                highlightbackground=border,
+                highlightcolor=border,
+            )
+        if hasattr(self, "license_status_label"):
+            self.license_status_label.configure(fg=fg)
+
+        def _update_post_stats(self):
+        """Actualizează numărul de caractere și de linii din textul postării."""
+        if not hasattr(self, "post_text"):
+            return
+
+        text = self.post_text.get("1.0", "end-1c")
+        chars = len(text)
+        lines = text.count("\n") + 1 if text else 0
+
+        if hasattr(self, "post_stats_var"):
+            self.post_stats_var.set(f"{chars} caractere, {lines} linii")
+
+    def _update_group_stats(self):
+        """Actualizează numărul de grupuri introduse."""
+        if not hasattr(self, "group_text"):
+            return
+
+        raw = self.group_text.get("1.0", "end-1c")
+        lines = [ln.strip() for ln in raw.splitlines()]
+        non_empty = [ln for ln in lines if ln]
+
+        count = len(non_empty)
+        if hasattr(self, "groups_stats_var"):
+            if count == 1:
+                txt = "1 grup introdus"
+            else:
+                txt = f"{count} grupuri introduse"
+            self.groups_stats_var.set(txt)
+
+    def _on_post_text_modified(self, event=None):
+        """Handler pentru evenimentul <<Modified>> al textului postării."""
+        widget = event.widget if event is not None else self.post_text
+        try:
+            widget.edit_modified(False)
+        except tk.TclError:
+            pass
+        self._update_post_stats()
+
+    def _on_group_text_modified(self, event=None):
+        """Handler pentru evenimentul <<Modified>> al textului cu grupuri."""
+        widget = event.widget if event is not None else self.group_text
+        try:
+            widget.edit_modified(False)
+        except tk.TclError:
+            pass
+        self._update_group_stats()
+
     def _update_run_button_text(self):
         if self.is_running:
-            self.run_btn.config(text="Oprește postările")
+            self.run_btn.config(
+                text="Oprește postările",
+                bg=COLORS["danger"],
+                fg="white",
+                activebackground="#b91c1c",
+                activeforeground="white",
+            )
         else:
-            self.run_btn.config(text="Postează acum")
+            self.run_btn.config(
+                text="Postează acum",
+                bg=COLORS["accent"],
+                fg="white",
+                activebackground="#6944c4",
+                activeforeground="white",
+            )
 
     def _update_scheduler_state(self):
         # sincronizăm flag-urile în CONFIG și pornim/oprim thread-ul de scheduler
@@ -1848,6 +2204,7 @@ if __name__ == "__main__":
         run_self_updater()
     else:
         main()
+
 
 
 
