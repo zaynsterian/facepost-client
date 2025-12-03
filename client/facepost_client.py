@@ -1375,7 +1375,7 @@ class FacepostApp:
         else:
             self.interval_button.config(text="Pornește repetarea")
 
-        def _on_license_status_changed(self, *args):
+    def _on_license_status_changed(self, *args):
         """Schimbă culoarea cardului de licență și a textului în funcție de mesaj."""
         if not hasattr(self, "license_status_var"):
             return
@@ -1410,7 +1410,7 @@ class FacepostApp:
         if hasattr(self, "license_status_label"):
             self.license_status_label.configure(fg=fg)
 
-        def _update_post_stats(self):
+    def _update_post_stats(self):
         """Actualizează numărul de caractere și de linii din textul postării."""
         if not hasattr(self, "post_text"):
             return
@@ -2204,6 +2204,7 @@ if __name__ == "__main__":
         run_self_updater()
     else:
         main()
+
 
 
 
