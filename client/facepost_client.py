@@ -872,7 +872,7 @@ class FacepostApp:
         root = self.root
         root.geometry("960x720")
         root.configure(bg=COLORS["bg"])
-        root.option_add("*Font", "Segoe UI 9")
+        root.option_add("*Font", "{Segoe UI} 9")
 
         # ====== Container scrollabil ======
         container = tk.Frame(root, bg=COLORS["bg"])
@@ -2219,6 +2219,7 @@ if __name__ == "__main__":
         run_self_updater()
     else:
         main()
+
 
 
 
