@@ -24,6 +24,21 @@ from selenium.webdriver.common.by import By
 from selenium.common.exceptions import WebDriverException
 from selenium.webdriver.common.keys import Keys
 
+# ================== UI THEME ==================
+
+COLORS = {
+    "bg": "#f6f7fb",        # fundal aplicație
+    "card": "#ffffff",      # carduri
+    "border": "#e6e6ef",    # contur card
+    "accent": "#7B57E0",    # mov (butoane principale)
+    "accent_soft": "#ede7ff",
+    "ok": "#16a34a",
+    "warn": "#f97316",
+    "danger": "#ef4444",
+    "text": "#222222",
+    "muted": "#666666",
+}
+
 # ================== CONFIG GLOBALĂ ==================
 
 APP_NAME = "Facepost"
@@ -1850,11 +1865,11 @@ class FacepostApp:
         if status == "unbound":
             if exp:
                 self.license_status_var.set(
-                    f'Licență activă până la {exp}. Te rog apasă butonul "Bind licență" pentru a continua.'
+                    f'Licență activă până la {exp}. Te rog apasă butonul "Activează licență" pentru a continua.'
                 )
             else:
                 self.license_status_var.set(
-                    'Licență activă. Te rog apasă butonul "Bind licență" pentru a continua.'
+                    'Licență activă. Te rog apasă butonul "Activează licență" pentru a continua.'
                 )
             return
 
@@ -2204,6 +2219,7 @@ if __name__ == "__main__":
         run_self_updater()
     else:
         main()
+
 
 
 
