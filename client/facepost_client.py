@@ -866,8 +866,6 @@ class FacepostApp:
 
     # ---------- UI building ----------
 
-    # ---------- UI building ----------
-
     def _build_ui(self):
         root = self.root
         root.geometry("960x720")
@@ -2219,6 +2217,7 @@ if __name__ == "__main__":
         run_self_updater()
     else:
         main()
+
 
 
 
