@@ -46,7 +46,8 @@ API_URL = "https://facepost.onrender.com"
 CONFIG_FILE = Path.home() / ".facepost_config.json"
 CHROMEDRIVER_NAME = "chromedriver.exe"  # în același folder cu EXE-ul
 LOGIN_DRIVER: webdriver.Chrome | None = None
-CLIENT_VERSION = "2.3.0"
+CLIENT_VERSION = "3.1.0"
+JUST_UPDATED = ("--just-updated" in sys.argv)
 
 UTC = timezone.utc
 
@@ -1711,6 +1712,9 @@ class FacepostApp:
         """
         # mic delay după pornire (lăsăm UI-ul să se inițializeze)
         time.sleep(10)
+        if JUST_UPDATED:
+    print("[UPDATE] Just updated -> skip checks 10 minute ca anti-loop guard.")
+    time.sleep(600)
 
         while True:
             try:
@@ -2187,7 +2191,7 @@ def run_self_updater():
     # 5) pornim Facepost nou
     try:
         print("[SELF-UPDATE] Pornez noul Facepost:", target)
-        subprocess.Popen([str(target)], close_fds=True)
+        subprocess.Popen([str(target), "--just-updated"], close_fds=True)
     except Exception as e:
         print("[SELF-UPDATE] Nu pot porni noul Facepost:", e)
         return
@@ -2207,6 +2211,7 @@ if __name__ == "__main__":
         run_self_updater()
     else:
         main()
+
 
 
 
