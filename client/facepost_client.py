@@ -1713,8 +1713,8 @@ class FacepostApp:
         # mic delay după pornire (lăsăm UI-ul să se inițializeze)
         time.sleep(10)
         if JUST_UPDATED:
-    print("[UPDATE] Just updated -> skip checks 10 minute ca anti-loop guard.")
-    time.sleep(600)
+            print("[UPDATE] Just updated -> skip checks 10 minute ca anti-loop guard.")
+            time.sleep(600)
 
         while True:
             try:
@@ -2211,6 +2211,7 @@ if __name__ == "__main__":
         run_self_updater()
     else:
         main()
+
 
 
 
