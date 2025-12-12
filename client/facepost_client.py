@@ -1703,35 +1703,35 @@ class FacepostApp:
         }
 
     def _update_watcher(self):
-    """
-    Verifică update-uri la fiecare 5 minute.
-    Dacă găsește update:
-      - dacă nu rulează nimic, declanșează imediat update-ul
-      - dacă rulează, setează update_pending și îl face după rundă
-    """
-    # mic delay după pornire (lăsăm UI-ul să se inițializeze)
-    time.sleep(10)
+        """
+        Verifică update-uri la fiecare 5 minute.
+        Dacă găsește update:
+          - dacă nu rulează nimic, declanșează imediat update-ul
+          - dacă rulează, setează update_pending și îl face după rundă
+        """
+        # mic delay după pornire (lăsăm UI-ul să se inițializeze)
+        time.sleep(10)
 
-    while True:
-        try:
-            # dacă deja avem update pending/info, nu mai spamăm serverul
-            # (opțional: poți comenta aceste 2 linii dacă vrei să tot verifice)
-            if self.update_info is not None:
+        while True:
+            try:
+                # dacă deja avem update pending/info, nu mai spamăm serverul
+                # (opțional: poți comenta aceste 2 linii dacă vrei să tot verifice)
+                if self.update_info is not None:
+                    time.sleep(300)
+                    continue
+
+                info = self._check_for_update_once()
+                if info is not None:
+                    self.update_info = info
+                    if not self.is_running:
+                        self.root.after(0, self._trigger_auto_update)
+                    else:
+                        self.update_pending = True
+
+                time.sleep(300)  # 5 minute
+            except Exception as e:
+                print("[UPDATE] Eroare în update_watcher:", e)
                 time.sleep(300)
-                continue
-
-            info = self._check_for_update_once()
-            if info is not None:
-                self.update_info = info
-                if not self.is_running:
-                    self.root.after(0, self._trigger_auto_update)
-                else:
-                    self.update_pending = True
-
-            time.sleep(300)  # 5 minute
-        except Exception as e:
-            print("[UPDATE] Eroare în update_watcher:", e)
-            time.sleep(300)
 
     def _trigger_auto_update(self):
         """Cheamă start_self_update dacă avem info validă despre update."""
@@ -2207,6 +2207,7 @@ if __name__ == "__main__":
         run_self_updater()
     else:
         main()
+
 
 
 
