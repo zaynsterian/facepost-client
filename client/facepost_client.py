@@ -1703,45 +1703,35 @@ class FacepostApp:
         }
 
     def _update_watcher(self):
-        """
-        Verifică o dată la 24h dacă există versiune nouă.
-        Dacă găsește update și nu rulează nimic, declanșează direct self-update.
-        Dacă rulează ceva, setează update_pending și va fi tratat la finalul task-ului.
-        """
-        while True:
-            try:
-                now = datetime.now()
-                last_check_iso = CONFIG.get("last_update_check")
-                if last_check_iso:
-                    try:
-                        last_check = datetime.fromisoformat(last_check_iso)
-                    except Exception:
-                        last_check = now - timedelta(days=2)
+    """
+    Verifică update-uri la fiecare 5 minute.
+    Dacă găsește update:
+      - dacă nu rulează nimic, declanșează imediat update-ul
+      - dacă rulează, setează update_pending și îl face după rundă
+    """
+    # mic delay după pornire (lăsăm UI-ul să se inițializeze)
+    time.sleep(10)
+
+    while True:
+        try:
+            # dacă deja avem update pending/info, nu mai spamăm serverul
+            # (opțional: poți comenta aceste 2 linii dacă vrei să tot verifice)
+            if self.update_info is not None:
+                time.sleep(300)
+                continue
+
+            info = self._check_for_update_once()
+            if info is not None:
+                self.update_info = info
+                if not self.is_running:
+                    self.root.after(0, self._trigger_auto_update)
                 else:
-                    last_check = now - timedelta(days=2)
+                    self.update_pending = True
 
-                # dacă au trecut deja 24h de la ultimul check, verificăm
-                if (now - last_check) >= timedelta(hours=24):
-                    info = self._check_for_update_once()
-                    CONFIG["last_update_check"] = now.isoformat()
-                    save_config(CONFIG)
-
-                    if info is not None:
-                        # avem versiune nouă
-                        self.update_info = info
-                        if not self.is_running:
-                            # nu rulează nimic -> putem lansa direct updater-ul
-                            self.root.after(0, self._trigger_auto_update)
-                        else:
-                            # există task în curs, îl facem după ce se termină
-                            print("[UPDATE] Update găsit, îl fac după terminarea rundei.")
-                            self.update_pending = True
-
-                # nu vrem să spamăm API-ul – verificăm maxim o dată pe oră
-                time.sleep(3600)
-            except Exception as e:
-                print("[UPDATE] Eroare în update_watcher:", e)
-                time.sleep(3600)
+            time.sleep(300)  # 5 minute
+        except Exception as e:
+            print("[UPDATE] Eroare în update_watcher:", e)
+            time.sleep(300)
 
     def _trigger_auto_update(self):
         """Cheamă start_self_update dacă avem info validă despre update."""
@@ -2217,6 +2207,7 @@ if __name__ == "__main__":
         run_self_updater()
     else:
         main()
+
 
 
 
