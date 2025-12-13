@@ -296,10 +296,10 @@ def wait_for_facebook_home(driver: webdriver.Chrome, timeout: int = 60):
 
 
 # ================== LOGICA DE POSTARE ==================
-def set_clipboard_text_windows(text: str, retries: int = 20, delay: float = 0.05) -> bool:
+def set_clipboard_text_windows(text: str, retries: int = 30, delay: float = 0.05) -> bool:
     """
     Setează clipboard-ul Windows cu text Unicode (emoji + newline inclus).
-    Reîncearcă dacă clipboard-ul e temporar blocat de alt proces.
+    Variantă stabilă pe x64 (ctypes prototypes setate).
     """
     if text is None:
         text = ""
@@ -310,6 +310,34 @@ def set_clipboard_text_windows(text: str, retries: int = 20, delay: float = 0.05
     user32 = ctypes.windll.user32
     kernel32 = ctypes.windll.kernel32
 
+    # --- prototypes (IMPORTANT pentru x64) ---
+    user32.OpenClipboard.argtypes = [wintypes.HWND]
+    user32.OpenClipboard.restype = wintypes.BOOL
+
+    user32.CloseClipboard.argtypes = []
+    user32.CloseClipboard.restype = wintypes.BOOL
+
+    user32.EmptyClipboard.argtypes = []
+    user32.EmptyClipboard.restype = wintypes.BOOL
+
+    user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+    user32.SetClipboardData.restype = wintypes.HANDLE
+
+    kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+    kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+
+    kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalLock.restype = wintypes.LPVOID
+
+    kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalUnlock.restype = wintypes.BOOL
+
+    kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalFree.restype = wintypes.HGLOBAL
+    # ---------------------------------------
+
+    data = (text + "\x00").encode("utf-16-le")
+
     for _ in range(retries):
         try:
             if not user32.OpenClipboard(None):
@@ -319,8 +347,6 @@ def set_clipboard_text_windows(text: str, retries: int = 20, delay: float = 0.05
             try:
                 user32.EmptyClipboard()
 
-                # alocăm buffer global pentru UTF-16LE
-                data = (text + "\x00").encode("utf-16-le")
                 hglobal = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
                 if not hglobal:
                     return False
@@ -339,8 +365,7 @@ def set_clipboard_text_windows(text: str, retries: int = 20, delay: float = 0.05
                     kernel32.GlobalFree(hglobal)
                     return False
 
-                # IMPORTANT: după SetClipboardData reușit, Windows “deține” memoria,
-                # deci NU mai eliberăm hglobal aici.
+                # după SetClipboardData reușit, Windows preia ownership → nu free aici
                 return True
 
             finally:
@@ -368,48 +393,40 @@ def sanitize_for_chromedriver(text: str) -> str:
     return "".join(safe_chars)
 
 def set_text_via_js(driver, element, text: str):
-    """
-    Setează textul într-un contenteditable folosind JavaScript,
-    astfel încât:
-      - să accepte orice emoji / caractere Unicode (nu folosim send_keys)
-      - să păstreze line-break-urile (paragrafele) ca în textul original
-      - să folosească mecanismul nativ de input (execCommand),
-        ca editorul Facebook să vadă textul ca și cum ar fi tastat/paste-uit.
-    """
     js = r"""
 var container = arguments[0];
 var text = arguments[1];
 if (!container) return;
 
-// dăm focus pe container ca să activeze editorul
 container.focus();
-
-// adevăratul element de input este, de obicei, document.activeElement
 var target = document.activeElement || container;
+
+// Convertim newline-urile în <br> ca să păstrăm structura
+var html = (text || "")
+  .replace(/&/g, "&amp;")
+  .replace(/</g, "&lt;")
+  .replace(/>/g, "&gt;")
+  .replace(/\r\n/g, "\n")
+  .replace(/\r/g, "\n")
+  .replace(/\n/g, "<br>");
 
 if (typeof document.execCommand === 'function') {
   try {
     target.focus();
-    // selectăm și ștergem tot ce era înainte
     document.execCommand('selectAll', false, null);
     document.execCommand('delete', false, null);
   } catch (e) {}
 
-  // aici NU mai împărțim textul noi – îl trimitem întreg, cu \n în el
-  // editorul știe singur cum să transforme newline-urile în <br>/paragrafe
   try {
     target.focus();
-    document.execCommand('insertText', false, text);
+    document.execCommand('insertHTML', false, html);
   } catch (e) {
-    // fallback brut dacă insertText e blocat
-    target.textContent = text;
+    target.innerHTML = html;
   }
 } else {
-  // fallback foarte brut dacă execCommand nu există deloc
-  target.textContent = text;
+  target.innerHTML = html;
 }
 
-// notificăm React / Facebook că s-a schimbat conținutul
 var ev = new Event("input", {bubbles: true});
 target.dispatchEvent(ev);
 """
@@ -2278,6 +2295,7 @@ if __name__ == "__main__":
         run_self_updater()
     else:
         main()
+
 
 
 
