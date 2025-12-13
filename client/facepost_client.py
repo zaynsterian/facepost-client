@@ -11,6 +11,8 @@ import tempfile
 import shutil
 import webbrowser
 import subprocess
+import ctypes
+from ctypes import wintypes
 
 import requests
 import tkinter as tk
@@ -294,6 +296,60 @@ def wait_for_facebook_home(driver: webdriver.Chrome, timeout: int = 60):
 
 
 # ================== LOGICA DE POSTARE ==================
+def set_clipboard_text_windows(text: str, retries: int = 20, delay: float = 0.05) -> bool:
+    """
+    Setează clipboard-ul Windows cu text Unicode (emoji + newline inclus).
+    Reîncearcă dacă clipboard-ul e temporar blocat de alt proces.
+    """
+    if text is None:
+        text = ""
+
+    CF_UNICODETEXT = 13
+    GMEM_MOVEABLE = 0x0002
+
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+
+    for _ in range(retries):
+        try:
+            if not user32.OpenClipboard(None):
+                time.sleep(delay)
+                continue
+
+            try:
+                user32.EmptyClipboard()
+
+                # alocăm buffer global pentru UTF-16LE
+                data = (text + "\x00").encode("utf-16-le")
+                hglobal = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
+                if not hglobal:
+                    return False
+
+                locked = kernel32.GlobalLock(hglobal)
+                if not locked:
+                    kernel32.GlobalFree(hglobal)
+                    return False
+
+                try:
+                    ctypes.memmove(locked, data, len(data))
+                finally:
+                    kernel32.GlobalUnlock(hglobal)
+
+                if not user32.SetClipboardData(CF_UNICODETEXT, hglobal):
+                    kernel32.GlobalFree(hglobal)
+                    return False
+
+                # IMPORTANT: după SetClipboardData reușit, Windows “deține” memoria,
+                # deci NU mai eliberăm hglobal aici.
+                return True
+
+            finally:
+                user32.CloseClipboard()
+
+        except Exception:
+            time.sleep(delay)
+
+    return False
 
 def sanitize_for_chromedriver(text: str) -> str:
     """
@@ -540,8 +596,19 @@ def open_group_and_post(driver: webdriver.Chrome,
 
                     textbox.send_keys(Keys.CONTROL, "a")
                     textbox.send_keys(Keys.DELETE)
-                    textbox.send_keys(Keys.CONTROL, "v")
-                    print("[DEBUG] Am introdus textul în postare prin clipboard (CTRL+V).")
+
+                    # IMPORTANT: re-setăm clipboard-ul chiar înainte de fiecare paste,
+                    # ca să nu conteze ce copiază userul între grupuri.
+                    ok = set_clipboard_text_windows(text)
+                    if not ok:
+                        print("[WARN] Nu am reușit să setez clipboard-ul. Încerc inserare prin JS.")
+                        set_text_via_js(driver, textbox, text)
+                    else:
+                        time.sleep(0.05)
+                        textbox.send_keys(Keys.CONTROL, "v")
+                        time.sleep(0.05)
+
+                    print("[DEBUG] Am introdus textul în postare (clipboard per post).")
                 except Exception as e:
                     print(
                         "[WARN] Paste prin clipboard eșuat, încerc inserare prin JS:", e
@@ -2211,6 +2278,7 @@ if __name__ == "__main__":
         run_self_updater()
     else:
         main()
+
 
 
 
