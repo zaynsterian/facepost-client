@@ -901,6 +901,7 @@ class FacepostApp:
         self.images = set(CONFIG.get("images", []))
         self.scheduler_thread = None
         self.stop_event = None  # pentru a opri rularea curentă
+        self._run_lock = threading.Lock()
         # starea de update
         self.update_info = None        # dict cu info despre update (dacă există)
         self.update_pending = False    # dacă trebuie făcut update după runda curentă
@@ -1665,11 +1666,10 @@ class FacepostApp:
             self._update_interval_button_text()
             self._update_scheduler_state()
 
-            # prima rundă rulează imediat
-            self.run_now(simulate=None, from_scheduler=False)
             # scheduler-ul va continua de la acest moment
             if self.scheduler_thread is not None:
                 self.scheduler_thread.last_interval_run = datetime.now()
+            self.run_now(simulate=None, from_scheduler=False)
 
     # ---------- acțiuni config & schedule ----------
 
@@ -2043,8 +2043,9 @@ class FacepostApp:
     # ---------- run logic ----------
 
     def run_now(self, simulate: bool | None = None, from_scheduler: bool = False):
+    # ===== guard atomic (anti-dublare thread-uri) =====
+    with self._run_lock:
         if self.is_running:
-            # când e chemat din scheduler, doar ignorăm dacă rulează deja
             if not from_scheduler:
                 messagebox.showwarning(
                     APP_NAME,
@@ -2052,6 +2053,21 @@ class FacepostApp:
                     parent=self.root,
                 )
             return
+        # marcăm IMEDIAT ca "rulează" ca să nu pornească încă un thread în paralel
+        self.is_running = True
+
+    def rollback_running():
+        with self._run_lock:
+            self.is_running = False
+        self.stop_event = None
+        try:
+            self._update_run_button_text()
+        except Exception:
+            pass
+
+    try:
+        self._update_run_button_text()
+        self.status_var.set("Rulez postările...")
 
         email = self.email_var.get().strip().lower()
         if not email:
@@ -2059,6 +2075,7 @@ class FacepostApp:
                 messagebox.showerror(
                     APP_NAME, "Te rog introdu emailul licenței.", parent=self.root
                 )
+            rollback_running()
             return
 
         CONFIG["email"] = email
@@ -2072,6 +2089,7 @@ class FacepostApp:
                     f"Eroare la check licență: {resp['error']}",
                     parent=self.root,
                 )
+            rollback_running()
             return
         if resp.get("status") not in ("ok",):
             if not from_scheduler:
@@ -2080,10 +2098,11 @@ class FacepostApp:
                     f"Licența nu este activă sau este expirată ({resp.get('status')}).",
                     parent=self.root,
                 )
+            rollback_running()
             return
 
         groups_raw = self.group_text.get("1.0", "end").strip()
-        groups = [g for g in groups_raw.splitlines() if g.strip()]
+        groups = [g.strip() for g in groups_raw.splitlines() if g.strip()]
         if not groups:
             if not from_scheduler:
                 messagebox.showerror(
@@ -2091,15 +2110,25 @@ class FacepostApp:
                     "Te rog introdu cel puțin un URL de grup.",
                     parent=self.root,
                 )
+            rollback_running()
             return
+
+        # (opțional dar util) dedupe grupuri, păstrând ordinea
+        seen = set()
+        unique = []
+        for g in groups:
+            key = g.rstrip("/").lower()
+            if key not in seen:
+                seen.add(key)
+                unique.append(g)
+        groups = unique
 
         text = self.post_text.get("1.0", "end").strip()
 
-        # setăm textul postării în clipboard-ul sistemului
         try:
             self.root.clipboard_clear()
             self.root.clipboard_append(text)
-            self.root.update()  # necesar ca să se propage către OS
+            self.root.update()
             print(f"[DEBUG] Clipboard set cu textul postării (lungime {len(text)})")
         except Exception as e:
             print("[WARN] Nu pot seta clipboard-ul cu textul postării:", e)
@@ -2112,7 +2141,6 @@ class FacepostApp:
         if simulate is None:
             simulate = bool(self.simulate_var.get())
 
-        # pregătim flag-ul de oprire pentru această rundă
         self.stop_event = threading.Event()
 
         t = threading.Thread(
@@ -2121,6 +2149,11 @@ class FacepostApp:
             daemon=True,
         )
         t.start()
+
+    except Exception:
+        rollback_running()
+        raise
+
 
     def run_now_clicked(self):
         # Butonul "Postează acum" funcționează ca Start/Stop pentru runda curentă
@@ -2132,9 +2165,6 @@ class FacepostApp:
         self.run_now(simulate=None, from_scheduler=False)
 
     def _run_thread(self, groups, text, images, delay, simulate, stop_event):
-        self.is_running = True
-        self._update_run_button_text()
-        self.status_var.set("Rulez postările...")
         try:
             # log către server (best-effort)
             try:
@@ -2165,16 +2195,16 @@ class FacepostApp:
                         "Gata – postările ar trebui să fie publicate."
                     )
         finally:
-            self.is_running = False
+            with self._run_lock:
+                self.is_running = False
             self.stop_event = None
             self._update_run_button_text()
 
-            # dacă există un update în așteptare, îl declanșăm acum
             if self.update_pending and self.update_info is not None:
                 print("[UPDATE] Runda s-a terminat, lansez self-update.")
                 self.update_pending = False
-                # trebuie făcut în thread-ul principal Tk
                 self.root.after(0, self._trigger_auto_update)
+
 
 # ================== MAIN ==================
 
@@ -2295,6 +2325,7 @@ if __name__ == "__main__":
         run_self_updater()
     else:
         main()
+
 
 
 
