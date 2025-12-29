@@ -2044,115 +2044,115 @@ class FacepostApp:
 
     def run_now(self, simulate: bool | None = None, from_scheduler: bool = False):
     # ===== guard atomic (anti-dublare thread-uri) =====
-    with self._run_lock:
-        if self.is_running:
-            if not from_scheduler:
-                messagebox.showwarning(
-                    APP_NAME,
-                    "Deja rulează o sesiune de postare.",
-                    parent=self.root,
-                )
-            return
-        # marcăm IMEDIAT ca "rulează" ca să nu pornească încă un thread în paralel
-        self.is_running = True
-
-    def rollback_running():
         with self._run_lock:
-            self.is_running = False
-        self.stop_event = None
+            if self.is_running:
+                if not from_scheduler:
+                    messagebox.showwarning(
+                        APP_NAME,
+                        "Deja rulează o sesiune de postare.",
+                        parent=self.root,
+                    )
+                return
+            # marcăm IMEDIAT ca "rulează" ca să nu pornească încă un thread în paralel
+            self.is_running = True
+
+        def rollback_running():
+            with self._run_lock:
+                self.is_running = False
+            self.stop_event = None
+            try:
+                self._update_run_button_text()
+            except Exception:
+                pass
+
         try:
             self._update_run_button_text()
+            self.status_var.set("Rulez postările...")
+
+            email = self.email_var.get().strip().lower()
+            if not email:
+                if not from_scheduler:
+                    messagebox.showerror(
+                        APP_NAME, "Te rog introdu emailul licenței.", parent=self.root
+                    )
+                rollback_running()
+                return
+
+            CONFIG["email"] = email
+            save_config(CONFIG)
+
+            resp = check_license(email, CONFIG.get("device_id"))
+            if resp.get("error"):
+                if not from_scheduler:
+                    messagebox.showerror(
+                        APP_NAME,
+                        f"Eroare la check licență: {resp['error']}",
+                        parent=self.root,
+                    )
+                rollback_running()
+                return
+            if resp.get("status") not in ("ok",):
+                if not from_scheduler:
+                    messagebox.showerror(
+                        APP_NAME,
+                        f"Licența nu este activă sau este expirată ({resp.get('status')}).",
+                        parent=self.root,
+                    )
+                rollback_running()
+                return
+
+            groups_raw = self.group_text.get("1.0", "end").strip()
+            groups = [g.strip() for g in groups_raw.splitlines() if g.strip()]
+            if not groups:
+                if not from_scheduler:
+                    messagebox.showerror(
+                        APP_NAME,
+                        "Te rog introdu cel puțin un URL de grup.",
+                        parent=self.root,
+                    )
+                rollback_running()
+                return
+
+            # (opțional dar util) dedupe grupuri, păstrând ordinea
+            seen = set()
+            unique = []
+            for g in groups:
+                key = g.rstrip("/").lower()
+                if key not in seen:
+                    seen.add(key)
+                    unique.append(g)
+            groups = unique
+
+            text = self.post_text.get("1.0", "end").strip()
+
+            try:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(text)
+                self.root.update()
+                print(f"[DEBUG] Clipboard set cu textul postării (lungime {len(text)})")
+            except Exception as e:
+                print("[WARN] Nu pot seta clipboard-ul cu textul postării:", e)
+
+            try:
+                delay = int(self.delay_var.get() or "120")
+            except ValueError:
+                delay = 120
+
+            if simulate is None:
+                simulate = bool(self.simulate_var.get())
+
+            self.stop_event = threading.Event()
+
+            t = threading.Thread(
+                target=self._run_thread,
+                args=(groups, text, list(self.images), delay, simulate, self.stop_event),
+                daemon=True,
+            )
+            t.start()
+
         except Exception:
-            pass
-
-    try:
-        self._update_run_button_text()
-        self.status_var.set("Rulez postările...")
-
-        email = self.email_var.get().strip().lower()
-        if not email:
-            if not from_scheduler:
-                messagebox.showerror(
-                    APP_NAME, "Te rog introdu emailul licenței.", parent=self.root
-                )
             rollback_running()
-            return
-
-        CONFIG["email"] = email
-        save_config(CONFIG)
-
-        resp = check_license(email, CONFIG.get("device_id"))
-        if resp.get("error"):
-            if not from_scheduler:
-                messagebox.showerror(
-                    APP_NAME,
-                    f"Eroare la check licență: {resp['error']}",
-                    parent=self.root,
-                )
-            rollback_running()
-            return
-        if resp.get("status") not in ("ok",):
-            if not from_scheduler:
-                messagebox.showerror(
-                    APP_NAME,
-                    f"Licența nu este activă sau este expirată ({resp.get('status')}).",
-                    parent=self.root,
-                )
-            rollback_running()
-            return
-
-        groups_raw = self.group_text.get("1.0", "end").strip()
-        groups = [g.strip() for g in groups_raw.splitlines() if g.strip()]
-        if not groups:
-            if not from_scheduler:
-                messagebox.showerror(
-                    APP_NAME,
-                    "Te rog introdu cel puțin un URL de grup.",
-                    parent=self.root,
-                )
-            rollback_running()
-            return
-
-        # (opțional dar util) dedupe grupuri, păstrând ordinea
-        seen = set()
-        unique = []
-        for g in groups:
-            key = g.rstrip("/").lower()
-            if key not in seen:
-                seen.add(key)
-                unique.append(g)
-        groups = unique
-
-        text = self.post_text.get("1.0", "end").strip()
-
-        try:
-            self.root.clipboard_clear()
-            self.root.clipboard_append(text)
-            self.root.update()
-            print(f"[DEBUG] Clipboard set cu textul postării (lungime {len(text)})")
-        except Exception as e:
-            print("[WARN] Nu pot seta clipboard-ul cu textul postării:", e)
-
-        try:
-            delay = int(self.delay_var.get() or "120")
-        except ValueError:
-            delay = 120
-
-        if simulate is None:
-            simulate = bool(self.simulate_var.get())
-
-        self.stop_event = threading.Event()
-
-        t = threading.Thread(
-            target=self._run_thread,
-            args=(groups, text, list(self.images), delay, simulate, self.stop_event),
-            daemon=True,
-        )
-        t.start()
-
-    except Exception:
-        rollback_running()
-        raise
+            raise
 
 
     def run_now_clicked(self):
@@ -2325,6 +2325,7 @@ if __name__ == "__main__":
         run_self_updater()
     else:
         main()
+
 
 
 
