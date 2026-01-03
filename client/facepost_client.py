@@ -438,7 +438,7 @@ def open_group_and_post(driver: webdriver.Chrome,
                         images,
                         simulate: bool = False) -> None:
     """
-    Deschide un link de grup și postează textul + imaginile.
+    Deschide un link de grup și postează textul + media (imagini/video).
 
     1. Navighează în grup
     2. Găsește composer-ul folosind:
@@ -637,46 +637,75 @@ def open_group_and_post(driver: webdriver.Chrome,
         except Exception as e:
             print("[WARN] Nu pot scrie textul postării:", e)
 
-        # --- 5. Încarcă imaginile (dacă există) ---
+        # --- 5. Încarcă media (imagini + video) dacă există ---
 
-        for img_path in images or []:
-            abs_path = os.path.abspath(img_path)
-            try:
-                # input <input type="file" accept="image/...">
-                file_inputs = driver.find_elements(
-                    By.XPATH,
-                    "//input[@type='file' and contains(@accept, 'image')]",
-                )
-                file_input = file_inputs[0] if file_inputs else None
+        media_paths = [p for p in (images or []) if p and str(p).strip()]
+        if media_paths:
+            abs_paths = [os.path.abspath(p) for p in media_paths]
 
-                if file_input is None:
-                    # încercăm să apăsăm pe Foto/Photo ca să apară input-ul
+            def is_video(p: str) -> bool:
+                ext = os.path.splitext(p)[1].lower()
+                return ext in (".mp4", ".mov", ".mkv", ".avi", ".webm", ".m4v")
+
+            def find_media_input():
+                xps = [
+                    # preferăm input-ul din dialog (overlay) dacă există
+                    "//div[@role='dialog']//input[@type='file' and (not(@accept) or contains(@accept,'image') or contains(@accept,'video') or contains(@accept,'*'))]",
+                    "//input[@type='file' and (not(@accept) or contains(@accept,'image') or contains(@accept,'video') or contains(@accept,'*'))]",
+                    # fallback brut
+                    "//div[@role='dialog']//input[@type='file']",
+                    "//input[@type='file']",
+                ]
+                for xp in xps:
+                    els = driver.find_elements(By.XPATH, xp)
+                    if els:
+                        return els[0]
+                return None
+
+            file_input = find_media_input()
+
+            if file_input is None:
+                # încercăm să apăsăm pe Foto/Video ca să apară input-ul
+                btn_xps = [
+                    "//div[@role='button'][.//span[contains(text(),'Foto/video')]]",
+                    "//div[@role='button'][.//span[contains(text(),'Photo/video')]]",
+                    "//div[@role='button'][.//span[contains(text(),'Foto')]]",
+                    "//div[@role='button'][.//span[contains(text(),'Photo')]]",
+                    "//div[@role='button'][.//span[contains(text(),'Video')]]",
+                    "//div[@role='button'][.//span[contains(text(),'Videoclip')]]",
+                ]
+                for xp in btn_xps:
                     try:
-                        photo_btn = driver.find_element(
-                            By.XPATH,
-                            "//div[@role='button'][.//span[contains(text(),'Foto')] "
-                            " or .//span[contains(text(),'Photo')]]"
-                        )
-                        photo_btn.click()
+                        btn = driver.find_element(By.XPATH, xp)
+                        btn.click()
                         time.sleep(1)
-                        file_inputs = driver.find_elements(
-                            By.XPATH,
-                            "//input[@type='file' and contains(@accept, 'image')]",
-                        )
-                        file_input = file_inputs[0] if file_inputs else None
+                        file_input = find_media_input()
+                        if file_input is not None:
+                            break
                     except Exception:
-                        file_input = None
+                        continue
 
-                if file_input is None:
-                    print("[WARN] Nu am găsit input-ul de fișier pentru imagini.")
-                    break
+            if file_input is None:
+                print("[WARN] Nu am găsit input-ul de fișier pentru media (imagini/video).")
+            else:
+                try:
+                    # dacă input-ul suportă multiple, Chrome acceptă fișiere separate prin \n
+                    payload = "\n".join(abs_paths)
+                    file_input.send_keys(payload)
+                    print(f"[DEBUG] Am atașat {len(abs_paths)} fișiere media.")
+                except Exception as e:
+                    print("[WARN] Upload multi fișier eșuat, încerc pe rând:", e)
+                    for p in abs_paths:
+                        try:
+                            (find_media_input() or file_input).send_keys(p)
+                            print(f"[DEBUG] Am atașat media: {p}")
+                            time.sleep(1.0)
+                        except Exception as e2:
+                            print("[WARN] Nu pot atașa media:", p, e2)
+                            break
 
-                file_input.send_keys(abs_path)
-                print(f"[DEBUG] Am atașat imaginea: {abs_path}")
-                time.sleep(1.5)
-            except Exception as e:
-                print("[WARN] Nu pot atașa imaginea:", abs_path, e)
-                break
+                # dacă avem video, îl lăsăm puțin să pornească upload-ul
+                time.sleep(3 if any(is_video(p) for p in abs_paths) else 1)
 
         # --- 6. Apasă butonul de „Postare” ---
 
@@ -1209,7 +1238,7 @@ class FacepostApp:
 
         tk.Button(
             images_frame,
-            text="Adaugă imagini",
+            text="Adaugă media",
             command=self.add_images_clicked,
             bg=COLORS["card"],
             fg=COLORS["text"],
@@ -1226,7 +1255,7 @@ class FacepostApp:
 
         tk.Button(
             images_buttons_frame,
-            text="Șterge imaginea",
+            text="Șterge fișierul",
             command=self.remove_selected_image,
             padx=8,
             pady=3,
@@ -2000,9 +2029,11 @@ class FacepostApp:
 
     def add_images_clicked(self):
         paths = filedialog.askopenfilenames(
-            title="Alege imagini",
+            title="Alege media (imagini / video)",
             filetypes=[
-                ("Imagini", "*.png;*.jpg;*.jpeg;*.gif;*.bmp;*.webp"),
+                ("Media (imagini + video)", "*.png *.jpg *.jpeg *.gif *.bmp *.webp *.mp4 *.mov *.mkv *.avi *.webm *.m4v"),
+                ("Imagini", "*.png *.jpg *.jpeg *.gif *.bmp *.webp"),
+                ("Video", "*.mp4 *.mov *.mkv *.avi *.webm *.m4v"),
                 ("Toate fișierele", "*.*"),
             ],
         )
@@ -2032,7 +2063,7 @@ class FacepostApp:
         # dacă nu, poți șterge complet acest if.
         if not messagebox.askyesno(
             APP_NAME,
-            "Ești sigur că vrei să ștergi toate imaginile din postare?",
+            "Ești sigur că vrei să ștergi toate fișierele media din postare?",
             parent=self.root,
         ):
             return
