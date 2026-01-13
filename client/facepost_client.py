@@ -4,6 +4,7 @@ import json
 import time
 import threading
 import hashlib
+import math
 from pathlib import Path
 from datetime import datetime, timedelta, time as dtime, timezone
 import platform
@@ -48,7 +49,7 @@ API_URL = "https://facepost.onrender.com"
 CONFIG_FILE = Path.home() / ".facepost_config.json"
 CHROMEDRIVER_NAME = "chromedriver.exe"  # în același folder cu EXE-ul
 LOGIN_DRIVER: webdriver.Chrome | None = None
-CLIENT_VERSION = "3.1.5"
+CLIENT_VERSION = "3.2.0"
 JUST_UPDATED = ("--just-updated" in sys.argv)
 
 UTC = timezone.utc
@@ -71,14 +72,12 @@ DEFAULT_CONFIG = {
     "simulate": False,
 }
 
-
 # ================== CONFIG HELPERI ==================
 
 def stable_fingerprint() -> str:
     """Fingerprint stabil pentru device (hash din info de sistem)."""
     raw = f"{platform.node()}|{platform.system()}|{platform.machine()}|{platform.version()}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
-
 
 def load_config() -> dict:
     if CONFIG_FILE.exists():
@@ -112,7 +111,6 @@ def load_config() -> dict:
 
     return cfg
 
-
 def save_config(cfg: dict) -> None:
     try:
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
@@ -120,11 +118,9 @@ def save_config(cfg: dict) -> None:
     except Exception as e:
         print("Eroare la salvare config:", e)
 
-
 CONFIG = load_config()
 # forțăm mereu același server URL (nu se poate modifica din UI)
 CONFIG["server_url"] = API_URL
-
 
 # ================== API LICENȚE & LOGS ==================
 
@@ -141,16 +137,13 @@ def api_post(path: str, payload: dict) -> dict:
     except Exception as e:
         return {"error": str(e), "_http": 0}
 
-
 def bind_license(email: str, fingerprint: str) -> dict:
     """Leagă device-ul de licență: POST /bind"""
     return api_post("/bind", {"email": email, "fingerprint": fingerprint})
 
-
 def check_license(email: str, fingerprint: str) -> dict:
     """Verifică licența pentru device: POST /check"""
     return api_post("/check", {"email": email, "fingerprint": fingerprint})
-
 
 def log_run(groups, text: str, images):
     """
@@ -173,7 +166,6 @@ def log_run(groups, text: str, images):
     }
     return api_post("/log_run", payload)
 
-
 # ================== SELENIUM / CHROMEDRIVER ==================
 
 def get_chromedriver_path() -> str:
@@ -189,7 +181,6 @@ def get_chromedriver_path() -> str:
     candidate = Path.cwd() / CHROMEDRIVER_NAME
     return str(candidate)
 
-
 def create_driver() -> webdriver.Chrome:
     """Pornește Chrome cu profilul dedicat Facepost."""
     chrome_opts = webdriver.ChromeOptions()
@@ -203,7 +194,6 @@ def create_driver() -> webdriver.Chrome:
     service = Service(get_chromedriver_path())
     driver = webdriver.Chrome(service=service, options=chrome_opts)
     return driver
-
 
 # ================== CONFIGURARE LOGIN FACEBOOK ==================
 
@@ -293,7 +283,6 @@ def wait_for_facebook_home(driver: webdriver.Chrome, timeout: int = 60):
     WebDriverWait(driver, timeout).until(
         EC.presence_of_element_located((By.TAG_NAME, "body"))
     )
-
 
 # ================== LOGICA DE POSTARE ==================
 def set_clipboard_text_windows(text: str, retries: int = 30, delay: float = 0.05) -> bool:
@@ -480,25 +469,35 @@ def open_group_and_post(driver: webdriver.Chrome,
         # --- 1. Caută butonul de composer în interiorul GroupInlineComposer ---
 
         group_inline_xpaths = [
-            # cu text explicit în span
-            "//div[@data-pagelet='GroupInlineComposer']"
-            "//div[@role='button'][.//span[contains(text(),'Scrie ceva')]]",
+            # RO
+            "//div[@data-pagelet='GroupInlineComposer']//div[@role='button'][.//span[contains(text(),'Scrie ceva')]]",
+            "//div[@data-pagelet='GroupInlineComposer']//div[@role='button'][.//span[contains(text(),'Scrie acum')]]",
+            "//div[@data-pagelet='GroupInlineComposer']//div[@role='button'][.//span[contains(text(),'Scrie o postare')]]",
+            "//div[@data-pagelet='GroupInlineComposer']//div[@role='button'][.//span[contains(text(),'Creează o postare')]]",
 
-            "//div[@data-pagelet='GroupInlineComposer']"
-            "//div[@role='button'][.//span[contains(text(),'Scrie acum')]]",
+            # EN
+            "//div[@data-pagelet='GroupInlineComposer']//div[@role='button'][.//span[contains(text(),'Create post')]]",
+            "//div[@data-pagelet='GroupInlineComposer']//div[@role='button'][.//span[contains(text(),'Write something')]]",
 
-            "//div[@data-pagelet='GroupInlineComposer']"
-            "//div[@role='button'][.//span[contains(text(),'Scrie o postare')]]",
+            # HU
+            "//div[@data-pagelet='GroupInlineComposer']//div[@role='button'][.//span[contains(text(),'Írj valamit')]]",
+            "//div[@data-pagelet='GroupInlineComposer']//div[@role='button'][.//span[contains(text(),'Mi jár a fejedben')]]",
+            "//div[@data-pagelet='GroupInlineComposer']//div[@role='button'][.//span[contains(text(),'Bejegyzés létrehozása')]]",
 
-            "//div[@data-pagelet='GroupInlineComposer']"
-            "//div[@role='button'][.//span[contains(text(),'Creează o postare')]]",
+            # IT
+            "//div[@data-pagelet='GroupInlineComposer']//div[@role='button'][.//span[contains(text(),'Crea un post')]]",
+            "//div[@data-pagelet='GroupInlineComposer']//div[@role='button'][.//span[contains(text(),'Cosa stai pensando')]]",
+            "//div[@data-pagelet='GroupInlineComposer']//div[@role='button'][.//span[contains(text(),'Scrivi qualcosa')]]",
 
-            # engleză
-            "//div[@data-pagelet='GroupInlineComposer']"
-            "//div[@role='button'][.//span[contains(text(),'Create post')]]",
+            # DE
+            "//div[@data-pagelet='GroupInlineComposer']//div[@role='button'][.//span[contains(text(),'Beitrag erstellen')]]",
+            "//div[@data-pagelet='GroupInlineComposer']//div[@role='button'][.//span[contains(text(),'Schreib etwas')]]",
+            "//div[@data-pagelet='GroupInlineComposer']//div[@role='button'][.//span[contains(text(),'Woran denkst du')]]",
 
-            "//div[@data-pagelet='GroupInlineComposer']"
-            "//div[@role='button'][.//span[contains(text(),\"What's on your mind\")]]",
+            # ES
+            "//div[@data-pagelet='GroupInlineComposer']//div[@role='button'][.//span[contains(text(),'Crear publicación')]]",
+            "//div[@data-pagelet='GroupInlineComposer']//div[@role='button'][.//span[contains(text(),'Qué estás pensando')]]",
+            "//div[@data-pagelet='GroupInlineComposer']//div[@role='button'][.//span[contains(text(),'Escribe algo')]]",
 
             # fallback generic: primul button din GroupInlineComposer care are un span
             "(//div[@data-pagelet='GroupInlineComposer']//div[@role='button'][.//span])[1]",
@@ -510,44 +509,47 @@ def open_group_and_post(driver: webdriver.Chrome,
 
         if not clicked:
             generic_composer_xpaths = [
-                # română
+                # RO
                 "//div[@role='button'][.//span[contains(text(),'Scrie ceva')]]",
                 "//div[@role='button'][.//span[contains(text(),'Scrie acum')]]",
                 "//div[@role='button'][.//span[contains(text(),'Scrie o postare')]]",
                 "//div[@role='button'][.//span[contains(text(),'Creează o postare')]]",
 
-                # engleză
+                # EN
                 "//div[@role='button'][.//span[contains(text(),'Create post')]]",
-                "//div[@role='button'][.//span[contains(text(),\"What's on your mind\")]]",
                 "//div[@role='button'][.//span[contains(text(),'Write something')]]",
 
+                # HU
+                "//div[@role='button'][.//span[contains(text(),'Írj valamit')]]",
+                "//div[@role='button'][.//span[contains(text(),'Mi jár a fejedben')]]",
+
+                # IT
+                "//div[@role='button'][.//span[contains(text(),'Crea un post')]]",
+                "//div[@role='button'][.//span[contains(text(),'Cosa stai pensando')]]",
+
+                # DE
+                "//div[@role='button'][.//span[contains(text(),'Beitrag erstellen')]]",
+                "//div[@role='button'][.//span[contains(text(),'Schreib etwas')]]",
+
+                # ES
+                "//div[@role='button'][.//span[contains(text(),'Crear publicación')]]",
+                "//div[@role='button'][.//span[contains(text(),'Escribe algo')]]",
+
                 # aria-label (în cazul în care textul e ascuns în aria-label)
-                "//div[@role='button' and @aria-label and "
-                " (contains(@aria-label,'postare') or contains(@aria-label,'Post'))]",
+                "//div[@role='button' and @aria-label and ("
+                "contains(@aria-label,'postare') or contains(@aria-label,'Post') or "
+                "contains(@aria-label,'Beitrag') or contains(@aria-label,'Pubblica') or "
+                "contains(@aria-label,'Publicar') or contains(@aria-label,'Bejegyzés')"
+                ")]",
             ]
             clicked = try_click_xpaths(generic_composer_xpaths, log_prefix="composer")
 
-        # --- 3. Fallback: click direct în primul textbox dacă nu găsim niciun buton ---
-
+        # IMPORTANT: nu facem fallback pe primul textbox din pagină (risc să scriem în comentarii).
         if not clicked:
-            try:
-                textbox_fallback = WebDriverWait(driver, 15).until(
-                    EC.element_to_be_clickable(
-                        (By.XPATH, "(//div[@role='textbox'])[1]")
-                    )
-                )
-                driver.execute_script(
-                    "arguments[0].scrollIntoView({block:'center'});",
-                    textbox_fallback,
-                )
-                textbox_fallback.click()
-                print("[DEBUG] Am dat click direct în primul textbox (fallback).")
-            except Exception as e:
-                print(
-                    "[WARN] Nu am putut găsi nici butonul de creare postare, "
-                    "nici textbox-ul:", e
-                )
-                return
+            print(
+                "[WARN] Nu am găsit composer-ul (butonul de creare postare). Oprire ca să evit postări în comentarii."
+            )
+            return
 
         # --- 4. Găsește textbox-ul de postare (NU cel de comentarii) și scrie textul ---
 
@@ -557,19 +559,21 @@ def open_group_and_post(driver: webdriver.Chrome,
             textbox_xpaths = [
                 # 1) Preferăm textbox-ul din dialogul de postare (overlay)
                 "//div[@role='dialog']//div[@role='textbox' and "
-                "not(contains(@aria-label,'comentariu')) and "
-                "not(contains(@aria-label,'comment'))]",
+                "not(contains(@aria-label,'comentariu')) and not(contains(@aria-label,'Comentariu')) and "
+                "not(contains(@aria-label,'comment')) and not(contains(@aria-label,'Comment')) and "
+                "not(contains(@aria-label,'comentario')) and not(contains(@aria-label,'Comentario')) and "
+                "not(contains(@aria-label,'commento')) and not(contains(@aria-label,'Commento')) and "
+                "not(contains(@aria-label,'kommentar')) and not(contains(@aria-label,'Kommentar')) and "
+                "not(contains(@aria-label,'Hozzászólás')) and not(contains(@aria-label,'hozzászólás'))]",
 
                 # 2) Apoi textbox în interiorul GroupInlineComposer (inline)
-                "//div[@data-pagelet='GroupInlineComposer']"
-                "//div[@role='textbox' and "
-                "not(contains(@aria-label,'comentariu')) and "
-                "not(contains(@aria-label,'comment'))]",
-
-                # 3) Fallback: primul textbox fără 'comentariu/comment' în aria-label
-                "(//div[@role='textbox' and "
-                "not(contains(@aria-label,'comentariu')) and "
-                "not(contains(@aria-label,'comment'))])[1]",
+                "//div[@data-pagelet='GroupInlineComposer']//div[@role='textbox' and "
+                "not(contains(@aria-label,'comentariu')) and not(contains(@aria-label,'Comentariu')) and "
+                "not(contains(@aria-label,'comment')) and not(contains(@aria-label,'Comment')) and "
+                "not(contains(@aria-label,'comentario')) and not(contains(@aria-label,'Comentario')) and "
+                "not(contains(@aria-label,'commento')) and not(contains(@aria-label,'Commento')) and "
+                "not(contains(@aria-label,'kommentar')) and not(contains(@aria-label,'Kommentar')) and "
+                "not(contains(@aria-label,'Hozzászólás')) and not(contains(@aria-label,'hozzászólás'))]",
             ]
 
             for xp in textbox_xpaths:
@@ -709,28 +713,34 @@ def open_group_and_post(driver: webdriver.Chrome,
 
         # --- 6. Apasă butonul de „Postare” ---
 
-        try:
-            post_btn = WebDriverWait(driver, 30).until(
-                EC.element_to_be_clickable((
-                    By.XPATH,
-                    "//div[@aria-label='Postează' or "
-                    "      @aria-label='Post' or "
-                    "      @aria-label='Trimite' or "
-                    "      @aria-label='Publică']"
-                ))
-            )
-            driver.execute_script(
-                "arguments[0].scrollIntoView({block:'center'});", post_btn
-            )
-            post_btn.click()
+        post_xpaths = [
+            # preferăm butonul din dialog
+            "//div[@role='dialog']//div[@role='button' and @aria-label and ("
+            "contains(@aria-label,'Postează') or contains(@aria-label,'Post') or contains(@aria-label,'Publică') or contains(@aria-label,'Trimite') or "
+            "contains(@aria-label,'Publish') or contains(@aria-label,'Pubblica') or contains(@aria-label,'Publicar') or contains(@aria-label,'Posten') or "
+            "contains(@aria-label,'Közzététel') or contains(@aria-label,'Közzétesz')"
+            ")]",
+
+            "//div[@role='dialog']//div[@role='button'][.//span["
+            "normalize-space(.)='Postează' or normalize-space(.)='Postează acum' or normalize-space(.)='Post' or normalize-space(.)='Publish' or "
+            "normalize-space(.)='Pubblica' or normalize-space(.)='Publicar' or normalize-space(.)='Posten' or normalize-space(.)='Közzététel'"
+            "]]",
+
+            # fallback: inline composer (fără dialog)
+            "//div[@data-pagelet='GroupInlineComposer']//div[@role='button' and @aria-label and ("
+            "contains(@aria-label,'Postează') or contains(@aria-label,'Post') or contains(@aria-label,'Publică') or contains(@aria-label,'Publish') or "
+            "contains(@aria-label,'Pubblica') or contains(@aria-label,'Publicar') or contains(@aria-label,'Posten') or contains(@aria-label,'Közzététel')"
+            ")]",
+        ]
+
+        if try_click_xpaths(post_xpaths, log_prefix="post"):
             print("[DEBUG] Am apăsat butonul de postare.")
             time.sleep(3)
-        except Exception as e:
-            print("[WARN] Nu am găsit butonul de Postare:", e)
+        else:
+            print("[WARN] Nu am găsit butonul de Postare.")
 
     except Exception as e:
         print("[ERROR] Eroare în open_group_and_post pentru", group_url, ":", e)
-
 
 def run_posting(
     groups, text: str, images, delay: int, simulate: bool = False, stop_event=None
@@ -773,7 +783,6 @@ def run_posting(
             except Exception:
                 pass
 
-
 # ================== SCHEDULER ==================
 
 def parse_time_str(s: str):
@@ -785,7 +794,6 @@ def parse_time_str(s: str):
         return dtime(hour=int(hh), minute=int(mm))
     except Exception:
         return None
-
 
 def next_run_time_for(config: dict, which: str):
     enabled = config.get(f"schedule_enabled_{which}", False)
@@ -854,7 +862,6 @@ def compute_next_schedule_run(config: dict):
         return None
     return min(times)
 
-
 class SchedulerThread(threading.Thread):
     """
     Thread care verifică periodic dacă e momentul să ruleze postarea programată.
@@ -919,7 +926,6 @@ class SchedulerThread(threading.Thread):
                 print("[SCHEDULER ERROR]", e)
                 time.sleep(10)
 
-
 # ================== TKINTER UI ==================
 
 class FacepostApp:
@@ -978,6 +984,9 @@ class FacepostApp:
         threading.Thread(
             target=self._update_watcher, daemon=True
         ).start()
+
+        # self-check licență la pornire (o singură verificare per sesiune)
+        self.root.after(250, self._startup_license_check)
 
     # ---------- UI building ----------
 
@@ -1133,7 +1142,7 @@ class FacepostApp:
 
         # Status licență (text + styling dinamic)
         self.license_status_var = tk.StringVar(
-            value="Status licență necunoscut."
+            value="Licența va fi verificată automat la pornire."
         )
         self.license_status_var.trace_add("write", self._on_license_status_changed)
 
@@ -1520,12 +1529,12 @@ class FacepostApp:
             fg = COLORS["ok"]
 
         # portocaliu = trial / device nelegat (trebuie bind)
-        elif "trial" in low or "apasă butonul \"bind licență\"" in low:
+        elif "trial" in low or "activează licență" in low or "apasă butonul" in low:
             border = COLORS["warn"]
             fg = COLORS["warn"]
 
         # roșu = expirat / suspendat / eroare / necunoscut
-        elif any(word in low for word in ("expirată", "suspendată", "eroare", "necunoscut", "invalidă")):
+        elif any(word in low for word in ("expirată", "suspendată", "eroare", "invalidă")):
             border = COLORS["danger"]
             fg = COLORS["danger"]
 
@@ -1914,38 +1923,158 @@ class FacepostApp:
 
     # ---------- acțiuni licență ----------
 
-    def check_license_clicked(self):
-        email = self.email_var.get().strip().lower()
+    def _startup_license_check(self):
+        """Face automat un singur check de licență la pornirea aplicației (non-blocking)."""
+        email = (self.email_var.get() or "").strip().lower()
+
+        # Dacă nu avem email, nu speriem userul cu "necunoscut".
         if not email:
-            messagebox.showerror(
-                APP_NAME, "Te rog introdu emailul licenței.", parent=self.root
+            self.license_status_var.set(
+                "Introdu emailul licenței pentru verificare automată."
             )
             return
 
         CONFIG["email"] = email
         save_config(CONFIG)
 
-        resp = check_license(email, CONFIG.get("device_id"))
+        # status neutru pe durata verificării
+        self.license_status_var.set("Se verifică licența...")
 
-        # Dacă avem o eroare HTTP / de API, tratăm în funcție de cod
+        def worker():
+            resp = check_license(email, CONFIG.get("device_id"))
+            # update UI + (opțional) reminder în thread-ul UI
+            self.root.after(
+                0,
+                lambda: self._process_license_check_response(
+                    resp, show_popups=True
+                ),
+            )
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _parse_expires_at_utc(self, exp: str | None) -> datetime | None:
+        """Parsează expires_at din API într-un datetime aware (UTC) cât mai robust."""
+        if not exp:
+            return None
+        s = str(exp).strip()
+        if not s:
+            return None
+
+        # ISO 8601 (cu sau fără Z / timezone)
+        try:
+            iso = s
+            if iso.endswith("Z"):
+                iso = iso[:-1] + "+00:00"
+            dt = datetime.fromisoformat(iso)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=UTC)
+            return dt.astimezone(UTC)
+        except Exception:
+            pass
+
+        # fallback: YYYY-MM-DD
+        try:
+            dt = datetime.strptime(s[:10], "%Y-%m-%d").replace(tzinfo=UTC)
+            return dt
+        except Exception:
+            return None
+
+    def _maybe_show_expiry_reminder(self, expires_at: str | None):
+        """Afișează pop-up-uri la 7/5/3/1 zile până la expirare, o singură dată per prag."""
+        dt = self._parse_expires_at_utc(expires_at)
+        if dt is None:
+            return
+
+        now = datetime.now(UTC)
+        seconds_left = (dt - now).total_seconds()
+        if seconds_left <= 0:
+            return
+
+        bucket: int | None = None
+        if seconds_left <= 24 * 3600:
+            bucket = 1
+        else:
+            days_left = int(math.ceil(seconds_left / (24 * 3600)))
+            if days_left in (7, 5, 3):
+                bucket = days_left
+
+        if bucket is None:
+            return
+
+        state = CONFIG.get("expiry_reminder")
+        if not isinstance(state, dict):
+            state = {"expires_at": "", "shown": []}
+        shown = state.get("shown")
+        if not isinstance(shown, list):
+            shown = []
+
+        exp_key = str(expires_at or "")
+        if state.get("expires_at") != exp_key:
+            # licență reînnoită / altă dată de expirare → resetăm pragurile afișate
+            shown = []
+            state = {"expires_at": exp_key, "shown": shown}
+
+        if bucket in shown:
+            # deja afișat pentru această dată de expirare
+            CONFIG["expiry_reminder"] = {
+                "expires_at": state.get("expires_at", exp_key),
+                "shown": shown,
+            }
+            return
+
+        if bucket == 1:
+            msg = (
+                "Mai sunt 24h pana la expirarea licentei dvs. "
+                "Daca doriti sa continuati sa folositi robotelul Facepost, "
+                "va rugam sa va reinnoiti licenta accesand www.facepost.ro -> Contul meu -> Reinnoieste Licenta."
+            )
+        else:
+            msg = f"Licenta dvs. va expira in {bucket} zile!"
+
+        try:
+            messagebox.showinfo(APP_NAME, msg, parent=self.root)
+        except Exception:
+            # în cazuri rare (UI închis), ignorăm
+            pass
+
+        shown.append(bucket)
+        CONFIG["expiry_reminder"] = {
+            "expires_at": state.get("expires_at", exp_key),
+            "shown": shown,
+        }
+        save_config(CONFIG)
+
+    def _process_license_check_response(self, resp: dict, show_popups: bool = False):
+        """Actualizează UI-ul de licență pe baza răspunsului /check și (opțional) arată reminder-ul de expirare."""
+        if not isinstance(resp, dict):
+            self.license_status_var.set("Nu pot verifica licența acum.")
+            return
+
+        # erori API/HTTP
         if resp.get("error"):
             http_code = resp.get("_http", 0)
 
+            # fără conexiune / timeout
+            if http_code == 0:
+                self.license_status_var.set(
+                    "Nu pot verifica licența acum (conexiune indisponibilă). Poți încerca mai târziu."
+                )
+                return
+
             # Nicio licență pentru acest email
-            if http_code == 404 and resp["error"] == "license not found":
+            if http_code == 404 and resp.get("error") == "license not found":
                 self.license_status_var.set(
                     "Nu există nicio licență pentru acest email. Verifică adresa de email sau contactează suportul."
                 )
                 return
 
             # Limită de dispozitive atinsă
-            if http_code == 403 and resp["error"] == "device limit reached":
+            if http_code == 403 and resp.get("error") == "device limit reached":
                 self.license_status_var.set(
                     "Limita de dispozitive a fost atinsă pentru această licență. Te rugăm să eliberezi un dispozitiv existent sau să contactezi suportul."
                 )
                 return
 
-            # Alte erori – afișăm generic
             self.license_status_var.set(f"Eroare: {resp['error']}")
             return
 
@@ -1964,6 +2093,9 @@ class FacepostApp:
             if extra:
                 msg += f" | {extra}"
             self.license_status_var.set(msg)
+
+            if show_popups:
+                self._maybe_show_expiry_reminder(exp)
             return
 
         # 2) Licență activă, device NELEGAT încă → ghidăm userul să apese Bind
@@ -1976,6 +2108,9 @@ class FacepostApp:
                 self.license_status_var.set(
                     'Licență activă. Te rog apasă butonul "Activează licență" pentru a continua.'
                 )
+
+            if show_popups:
+                self._maybe_show_expiry_reminder(exp)
             return
 
         # 3) Licență expirată
@@ -1992,7 +2127,7 @@ class FacepostApp:
             )
             return
 
-        # 5) Fallback – stilul vechi, în caz că apar alte statusuri
+        # 5) Fallback – status necunoscut
         msg = f"Status: {status}"
         if exp:
             msg += f" | expiră la: {exp}"
@@ -2001,6 +2136,30 @@ class FacepostApp:
         if extra:
             msg += f" | {extra}"
         self.license_status_var.set(msg)
+
+    def check_license_clicked(self):
+        email = self.email_var.get().strip().lower()
+        if not email:
+            messagebox.showerror(
+                APP_NAME, "Te rog introdu emailul licenței.", parent=self.root
+            )
+            return
+
+        CONFIG["email"] = email
+        save_config(CONFIG)
+
+        resp = check_license(email, CONFIG.get("device_id"))
+        # procesăm unificat + afișăm și reminder-urile de expirare
+        self._process_license_check_response(resp, show_popups=True)
+
+        # la apăsarea manuală a butonului, arătăm și un pop-up pentru erori / statusuri negative
+        try:
+            if isinstance(resp, dict) and resp.get("error"):
+                messagebox.showerror(APP_NAME, self.license_status_var.get(), parent=self.root)
+            elif isinstance(resp, dict) and resp.get("status") in ("expired", "inactive"):
+                messagebox.showwarning(APP_NAME, self.license_status_var.get(), parent=self.root)
+        except Exception:
+            pass
 
     def bind_license_clicked(self):
         email = self.email_var.get().strip().lower()
@@ -2185,7 +2344,6 @@ class FacepostApp:
             rollback_running()
             raise
 
-
     def run_now_clicked(self):
         # Butonul "Postează acum" funcționează ca Start/Stop pentru runda curentă
         if self.is_running:
@@ -2235,7 +2393,6 @@ class FacepostApp:
                 print("[UPDATE] Runda s-a terminat, lansez self-update.")
                 self.update_pending = False
                 self.root.after(0, self._trigger_auto_update)
-
 
 # ================== MAIN ==================
 
@@ -2349,52 +2506,10 @@ def main():
     app = FacepostApp(root)
     root.mainloop()
 
-
 if __name__ == "__main__":
     # dacă a fost pornit cu --self-update, rulăm logica de updater și NU deschidem UI-ul
     if "--self-update" in sys.argv:
         run_self_updater()
     else:
         main()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
