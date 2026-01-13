@@ -49,7 +49,7 @@ API_URL = "https://facepost.onrender.com"
 CONFIG_FILE = Path.home() / ".facepost_config.json"
 CHROMEDRIVER_NAME = "chromedriver.exe"  # în același folder cu EXE-ul
 LOGIN_DRIVER: webdriver.Chrome | None = None
-CLIENT_VERSION = "3.2.0"
+CLIENT_VERSION = "3.2.1"
 JUST_UPDATED = ("--just-updated" in sys.argv)
 
 UTC = timezone.utc
@@ -718,18 +718,18 @@ def open_group_and_post(driver: webdriver.Chrome,
             "//div[@role='dialog']//div[@role='button' and @aria-label and ("
             "contains(@aria-label,'Postează') or contains(@aria-label,'Post') or contains(@aria-label,'Publică') or contains(@aria-label,'Trimite') or "
             "contains(@aria-label,'Publish') or contains(@aria-label,'Pubblica') or contains(@aria-label,'Publicar') or contains(@aria-label,'Posten') or "
-            "contains(@aria-label,'Közzététel') or contains(@aria-label,'Közzétesz')"
+            "contains(@aria-label,'Közzététel') or contains(@aria-label,'Közzétesz') or contains(@aria-label,'Küldés') or contains(@aria-label,'Kuldés') or contains(@aria-label,'Kuldes')"
             ")]",
 
             "//div[@role='dialog']//div[@role='button'][.//span["
             "normalize-space(.)='Postează' or normalize-space(.)='Postează acum' or normalize-space(.)='Post' or normalize-space(.)='Publish' or "
-            "normalize-space(.)='Pubblica' or normalize-space(.)='Publicar' or normalize-space(.)='Posten' or normalize-space(.)='Közzététel'"
+            "normalize-space(.)='Pubblica' or normalize-space(.)='Publicar' or normalize-space(.)='Posten' or normalize-space(.)='Közzététel' or normalize-space(.)='Küldés' or normalize-space(.)='Kuldés' or normalize-space(.)='Kuldes'"
             "]]",
 
             # fallback: inline composer (fără dialog)
             "//div[@data-pagelet='GroupInlineComposer']//div[@role='button' and @aria-label and ("
             "contains(@aria-label,'Postează') or contains(@aria-label,'Post') or contains(@aria-label,'Publică') or contains(@aria-label,'Publish') or "
-            "contains(@aria-label,'Pubblica') or contains(@aria-label,'Publicar') or contains(@aria-label,'Posten') or contains(@aria-label,'Közzététel')"
+            "contains(@aria-label,'Pubblica') or contains(@aria-label,'Publicar') or contains(@aria-label,'Posten') or contains(@aria-label,'Közzététel') or contains(@aria-label,'Küldés') or contains(@aria-label,'Kuldés') or contains(@aria-label,'Kuldes')"
             ")]",
         ]
 
