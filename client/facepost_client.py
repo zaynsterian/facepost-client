@@ -2364,13 +2364,8 @@ class FacepostApp:
             if resp.get("maintenance_required"):
                 reason = resp.get("maintenance_reason") or "Mentenanță necesară."
                 if not from_scheduler:
-                    messagebox.showwarning(
-                        APP_NAME,
-                        f"Acces temporar blocat: {reason}
-
-Te rog contactează suportul Facepost.",
-                        parent=self.root,
-                    )
+                    msg = f"Acces temporar blocat: {reason}\n\nTe rog contactează suportul Facepost."
+                    messagebox.showwarning(APP_NAME, msg, parent=self.root)
                 rollback_running()
                 return
 
