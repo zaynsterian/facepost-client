@@ -49,7 +49,8 @@ API_URL = "https://facepost.onrender.com"
 CONFIG_FILE = Path.home() / ".facepost_config.json"
 CHROMEDRIVER_NAME = "chromedriver.exe"  # în același folder cu EXE-ul
 LOGIN_DRIVER: webdriver.Chrome | None = None
-CLIENT_VERSION = "3.2.2"
+CLIENT_VERSION = "3.2.1"
+HEARTBEAT_INTERVAL_SEC = 1800  # 30 min
 JUST_UPDATED = ("--just-updated" in sys.argv)
 
 UTC = timezone.utc
@@ -57,6 +58,7 @@ UTC = timezone.utc
 DEFAULT_CONFIG = {
     "email": "",
     "device_id": "",
+    "support_code": "",
     "server_url": API_URL,
     "chrome_profile_dir": "",
     "schedule_enabled_morning": False,
@@ -70,9 +72,7 @@ DEFAULT_CONFIG = {
     "images": [],
     "delay_seconds": 120,
     "simulate": False,
-    "support_code": "",
 }
-
 
 # ================== CONFIG HELPERI ==================
 
@@ -142,6 +142,44 @@ def api_post(path: str, payload: dict) -> dict:
 def bind_license(email: str, fingerprint: str) -> dict:
     """Leagă device-ul de licență: POST /bind"""
     return api_post("/bind", {"email": email, "fingerprint": fingerprint})
+
+def send_heartbeat(
+    event: str,
+    *,
+    error_code: str = "",
+    error_message: str = "",
+    groups_total: int | None = None,
+    groups_posted: int | None = None,
+    clear_error: bool | None = None,
+    extra: dict | None = None,
+) -> dict:
+    """Trimite un heartbeat către server (best-effort)."""
+    email = (CONFIG.get("email") or "").strip().lower()
+    fingerprint = CONFIG.get("device_id") or ""
+    if not email or not fingerprint:
+        return {"error": "missing email/fingerprint", "_http": 0}
+
+    payload = {
+        "email": email,
+        "fingerprint": fingerprint,
+        "support_code": (CONFIG.get("support_code") or "").strip(),
+        "client_version": CLIENT_VERSION,
+        "os": f"{platform.system()} {platform.release()}",
+        "event": (event or "").strip()[:64],
+        "error_code": (error_code or "").strip()[:64],
+        "error_message": (error_message or "").strip()[:400],
+        "groups_total": groups_total,
+        "groups_posted": groups_posted,
+        "clear_error": bool(clear_error) if clear_error is not None else None,
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
+    if extra and isinstance(extra, dict):
+        for k, v in extra.items():
+            if k not in payload:
+                payload[k] = v
+    # curățăm cheile None ca să nu încărcăm payload-ul
+    payload = {k: v for k, v in payload.items() if v is not None and v != ""}
+    return api_post("/heartbeat", payload)
 
 def check_license(email: str, fingerprint: str) -> dict:
     """Verifică licența pentru device: POST /check"""
@@ -753,6 +791,7 @@ def run_posting(
     și nu mai pornește noi postări după ce stop_event este setat.
     """
     driver = None
+    posted = 0
     try:
         driver = create_driver()
         wait_for_facebook_home(driver, timeout=60)
@@ -767,6 +806,7 @@ def run_posting(
                 continue
             print(f"[RUN] ({idx}/{len(groups)}) {group}")
             open_group_and_post(driver, group, text, images, simulate=simulate)
+            posted += 1
 
             if idx < len(groups):
                 # așteptăm delay-ul, dar ieșim mai rapid dacă se cere stop
@@ -784,6 +824,9 @@ def run_posting(
                 driver.quit()
             except Exception:
                 pass
+
+
+    return posted
 
 # ================== SCHEDULER ==================
 
@@ -947,10 +990,6 @@ class FacepostApp:
         self.delay_var = tk.StringVar(value=str(CONFIG.get("delay_seconds", 120)))
         self.simulate_var = tk.BooleanVar(value=CONFIG.get("simulate", False))
 
-        _sc = (CONFIG.get("support_code") or "").strip()
-        self.support_code_var = tk.StringVar(value=(f"Support code: {_sc}" if _sc else ""))
-        self.maintenance_blocked = False
-
         self.schedule_enabled_morning_var = tk.BooleanVar(
             value=CONFIG.get("schedule_enabled_morning", False)
         )
@@ -994,7 +1033,11 @@ class FacepostApp:
         # self-check licență la pornire (o singură verificare per sesiune)
         self.root.after(250, self._startup_license_check)
 
+        # Heartbeat periodic (telemetrie minimă)
+        self._hb_start_loop()
+
     # ---------- UI building ----------
+
 
     def _build_ui(self):
         root = self.root
@@ -1167,29 +1210,8 @@ class FacepostApp:
             columnspan=3,
             sticky="we",
             padx=16,
-            pady=(4, 4),
+            pady=(4, 12),
         )
-
-
-        # Cod suport (afișat când serverul îl trimite)
-        self.support_code_label = tk.Label(
-            config_card,
-            textvariable=self.support_code_var,
-            fg=COLORS["muted"],
-            bg=COLORS["card"],
-            anchor="w",
-            justify="left",
-            wraplength=600,
-        )
-        self.support_code_label.grid(
-            row=3,
-            column=0,
-            columnspan=3,
-            sticky="we",
-            padx=16,
-            pady=(0, 12),
-        )
-
 
         # aplicăm stil inițial
         self._on_license_status_changed()
@@ -1499,29 +1521,6 @@ class FacepostApp:
 
         # ---------- helperi UI ----------
 
-
-    def _set_run_controls_enabled(self, enabled: bool):
-        """Activează/dezactivează controalele de rulare (Postează acum + programări)."""
-        state = tk.NORMAL if enabled else tk.DISABLED
-
-        # dacă rulează deja, lăsăm butonul activ ca să poată opri
-        try:
-            if hasattr(self, "run_btn"):
-                if self.is_running:
-                    self.run_btn.config(state=tk.NORMAL)
-                else:
-                    self.run_btn.config(state=state)
-        except Exception:
-            pass
-
-        for attr in ("daily_button", "interval_button"):
-            try:
-                btn = getattr(self, attr, None)
-                if btn is not None:
-                    btn.config(state=state)
-            except Exception:
-                pass
-
     def _load_initial_texts(self):
         self.post_text.delete("1.0", "end")
         self.post_text.insert("1.0", CONFIG.get("post_text", ""))
@@ -1685,13 +1684,6 @@ class FacepostApp:
                 self.scheduler_thread = None
 
     def toggle_daily_schedule(self):
-        if getattr(self, "maintenance_blocked", False):
-            try:
-                messagebox.showwarning(APP_NAME, self.license_status_var.get(), parent=self.root)
-            except Exception:
-                pass
-            return
-
         """
         Pornește / oprește programarea zilnică.
         IMPORTANT: sincronizăm mereu UI -> CONFIG înainte de a actualiza scheduler-ul,
@@ -1709,13 +1701,6 @@ class FacepostApp:
         self._update_scheduler_state()
 
     def toggle_interval(self):
-        if getattr(self, "maintenance_blocked", False):
-            try:
-                messagebox.showwarning(APP_NAME, self.license_status_var.get(), parent=self.root)
-            except Exception:
-                pass
-            return
-
         """
         Pornește / oprește programarea repetitivă (din X în X minute).
         La pornire:
@@ -2114,53 +2099,6 @@ class FacepostApp:
             self.license_status_var.set("Nu pot verifica licența acum.")
             return
 
-
-        # Support code (dacă serverul îl trimite)
-        support_code = (resp.get("support_code") or "").strip()
-        if support_code:
-            self.support_code_var.set(f"Support code: {support_code}")
-            CONFIG["support_code"] = support_code
-            save_config(CONFIG)
-
-        # Maintenance gate (controlat din /ops)
-        if resp.get("maintenance_required"):
-            self.maintenance_blocked = True
-
-            # oprim orice programare activă
-            try:
-                if self.daily_schedule_active_var.get() or self.interval_schedule_active_var.get():
-                    self.daily_schedule_active_var.set(False)
-                    self.interval_schedule_active_var.set(False)
-                    self._update_daily_button_text()
-                    self._update_interval_button_text()
-                    self._update_scheduler_state()
-            except Exception:
-                pass
-
-            # dezactivăm controalele de run/scheduler
-            self._set_run_controls_enabled(False)
-
-            reason = (resp.get("maintenance_reason") or "").strip()
-            msg = "Este necesară o mentenanță rapidă pentru a continua."
-            if support_code:
-                msg += f" Cod suport: {support_code}."
-            if reason:
-                msg += f" ({reason})"
-
-            self.license_status_var.set(msg)
-
-            if show_popups:
-                try:
-                    messagebox.showwarning(APP_NAME, msg, parent=self.root)
-                except Exception:
-                    pass
-            return
-        else:
-            # dacă înainte era blocat și acum s-a deblocat
-            if getattr(self, "maintenance_blocked", False):
-                self.maintenance_blocked = False
-                self._set_run_controls_enabled(True)
-
         # erori API/HTTP
         if resp.get("error"):
             http_code = resp.get("_http", 0)
@@ -2343,6 +2281,36 @@ class FacepostApp:
     
     # ---------- run logic ----------
 
+    # ------------------ Heartbeat (telemetrie) ------------------
+    def _hb_send_async(self, event: str, **kwargs):
+        def _worker():
+            try:
+                resp = send_heartbeat(event, **kwargs)
+                print("[HEARTBEAT]", event, resp.get("_http"), resp.get("ok") or resp.get("status") or resp.get("error"))
+                # dacă serverul trimite support_code, îl persistăm
+                if resp.get("support_code"):
+                    try:
+                        CONFIG["support_code"] = str(resp.get("support_code")).strip()
+                        save_config(CONFIG)
+                    except Exception:
+                        pass
+            except Exception as e:
+                print("[HEARTBEAT] failed:", e)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _hb_tick(self):
+        # heartbeat periodic "idle" (nu blochează UI)
+        try:
+            self._hb_send_async("idle", clear_error=True)
+        finally:
+            self.root.after(int(HEARTBEAT_INTERVAL_SEC * 1000), self._hb_tick)
+
+    def _hb_start_loop(self):
+        # trimitem un heartbeat scurt la pornire, apoi periodic
+        self._hb_send_async("startup", clear_error=JUST_UPDATED)
+        self.root.after(int(HEARTBEAT_INTERVAL_SEC * 1000), self._hb_tick)
+
     def run_now(self, simulate: bool | None = None, from_scheduler: bool = False):
     # ===== guard atomic (anti-dublare thread-uri) =====
         with self._run_lock:
@@ -2384,13 +2352,25 @@ class FacepostApp:
 
             resp = check_license(email, CONFIG.get("device_id"))
 
-            # procesăm unificat (update UI + maintenance gate)
-            try:
-                self._process_license_check_response(resp, show_popups=(not from_scheduler))
-            except Exception:
-                pass
+            # salvează support_code (dacă serverul îl trimite)
+            if resp.get("support_code"):
+                try:
+                    CONFIG["support_code"] = str(resp.get("support_code")).strip()
+                    save_config(CONFIG)
+                except Exception:
+                    pass
 
-            if getattr(self, "maintenance_blocked", False):
+            # dacă serverul cere mentenanță (flag din /ops), oprim runda și cerem contact support
+            if resp.get("maintenance_required"):
+                reason = resp.get("maintenance_reason") or "Mentenanță necesară."
+                if not from_scheduler:
+                    messagebox.showwarning(
+                        APP_NAME,
+                        f"Acces temporar blocat: {reason}
+
+Te rog contactează suportul Facepost.",
+                        parent=self.root,
+                    )
                 rollback_running()
                 return
 
@@ -2485,14 +2465,36 @@ class FacepostApp:
                 print("[WARN] Nu pot trimite log_run:", e)
 
             # rulare efectivă
-            run_posting(
-                groups,
-                text,
-                images,
-                delay,
-                simulate=simulate,
-                stop_event=stop_event,
-            )
+            self._hb_send_async("run_started", groups_total=len(groups), groups_posted=0)
+            posted = 0
+            try:
+                posted = run_posting(
+                    groups,
+                    text,
+                    images,
+                    delay,
+                    simulate=simulate,
+                    stop_event=stop_event,
+                )
+            except Exception as e:
+                msg = str(e) or e.__class__.__name__
+                self.status_var.set(f"Eroare: {msg}")
+                self._hb_send_async(
+                    "run_error",
+                    error_code="RUN_EXCEPTION",
+                    error_message=msg,
+                    groups_total=len(groups),
+                    groups_posted=posted,
+                )
+                raise
+            else:
+                # succes (sau oprire controlată)
+                self._hb_send_async(
+                    "run_finished",
+                    groups_total=len(groups),
+                    groups_posted=posted,
+                    clear_error=True,
+                )
 
             if stop_event is not None and stop_event.is_set():
                 self.status_var.set(
