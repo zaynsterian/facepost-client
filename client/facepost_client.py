@@ -70,7 +70,9 @@ DEFAULT_CONFIG = {
     "images": [],
     "delay_seconds": 120,
     "simulate": False,
+    "support_code": "",
 }
+
 
 # ================== CONFIG HELPERI ==================
 
@@ -945,6 +947,10 @@ class FacepostApp:
         self.delay_var = tk.StringVar(value=str(CONFIG.get("delay_seconds", 120)))
         self.simulate_var = tk.BooleanVar(value=CONFIG.get("simulate", False))
 
+        _sc = (CONFIG.get("support_code") or "").strip()
+        self.support_code_var = tk.StringVar(value=(f"Support code: {_sc}" if _sc else ""))
+        self.maintenance_blocked = False
+
         self.schedule_enabled_morning_var = tk.BooleanVar(
             value=CONFIG.get("schedule_enabled_morning", False)
         )
@@ -1161,8 +1167,29 @@ class FacepostApp:
             columnspan=3,
             sticky="we",
             padx=16,
-            pady=(4, 12),
+            pady=(4, 4),
         )
+
+
+        # Cod suport (afișat când serverul îl trimite)
+        self.support_code_label = tk.Label(
+            config_card,
+            textvariable=self.support_code_var,
+            fg=COLORS["muted"],
+            bg=COLORS["card"],
+            anchor="w",
+            justify="left",
+            wraplength=600,
+        )
+        self.support_code_label.grid(
+            row=3,
+            column=0,
+            columnspan=3,
+            sticky="we",
+            padx=16,
+            pady=(0, 12),
+        )
+
 
         # aplicăm stil inițial
         self._on_license_status_changed()
@@ -1472,6 +1499,29 @@ class FacepostApp:
 
         # ---------- helperi UI ----------
 
+
+    def _set_run_controls_enabled(self, enabled: bool):
+        """Activează/dezactivează controalele de rulare (Postează acum + programări)."""
+        state = tk.NORMAL if enabled else tk.DISABLED
+
+        # dacă rulează deja, lăsăm butonul activ ca să poată opri
+        try:
+            if hasattr(self, "run_btn"):
+                if self.is_running:
+                    self.run_btn.config(state=tk.NORMAL)
+                else:
+                    self.run_btn.config(state=state)
+        except Exception:
+            pass
+
+        for attr in ("daily_button", "interval_button"):
+            try:
+                btn = getattr(self, attr, None)
+                if btn is not None:
+                    btn.config(state=state)
+            except Exception:
+                pass
+
     def _load_initial_texts(self):
         self.post_text.delete("1.0", "end")
         self.post_text.insert("1.0", CONFIG.get("post_text", ""))
@@ -1635,6 +1685,13 @@ class FacepostApp:
                 self.scheduler_thread = None
 
     def toggle_daily_schedule(self):
+        if getattr(self, "maintenance_blocked", False):
+            try:
+                messagebox.showwarning(APP_NAME, self.license_status_var.get(), parent=self.root)
+            except Exception:
+                pass
+            return
+
         """
         Pornește / oprește programarea zilnică.
         IMPORTANT: sincronizăm mereu UI -> CONFIG înainte de a actualiza scheduler-ul,
@@ -1652,6 +1709,13 @@ class FacepostApp:
         self._update_scheduler_state()
 
     def toggle_interval(self):
+        if getattr(self, "maintenance_blocked", False):
+            try:
+                messagebox.showwarning(APP_NAME, self.license_status_var.get(), parent=self.root)
+            except Exception:
+                pass
+            return
+
         """
         Pornește / oprește programarea repetitivă (din X în X minute).
         La pornire:
@@ -2050,6 +2114,53 @@ class FacepostApp:
             self.license_status_var.set("Nu pot verifica licența acum.")
             return
 
+
+        # Support code (dacă serverul îl trimite)
+        support_code = (resp.get("support_code") or "").strip()
+        if support_code:
+            self.support_code_var.set(f"Support code: {support_code}")
+            CONFIG["support_code"] = support_code
+            save_config(CONFIG)
+
+        # Maintenance gate (controlat din /ops)
+        if resp.get("maintenance_required"):
+            self.maintenance_blocked = True
+
+            # oprim orice programare activă
+            try:
+                if self.daily_schedule_active_var.get() or self.interval_schedule_active_var.get():
+                    self.daily_schedule_active_var.set(False)
+                    self.interval_schedule_active_var.set(False)
+                    self._update_daily_button_text()
+                    self._update_interval_button_text()
+                    self._update_scheduler_state()
+            except Exception:
+                pass
+
+            # dezactivăm controalele de run/scheduler
+            self._set_run_controls_enabled(False)
+
+            reason = (resp.get("maintenance_reason") or "").strip()
+            msg = "Este necesară o mentenanță rapidă pentru a continua."
+            if support_code:
+                msg += f" Cod suport: {support_code}."
+            if reason:
+                msg += f" ({reason})"
+
+            self.license_status_var.set(msg)
+
+            if show_popups:
+                try:
+                    messagebox.showwarning(APP_NAME, msg, parent=self.root)
+                except Exception:
+                    pass
+            return
+        else:
+            # dacă înainte era blocat și acum s-a deblocat
+            if getattr(self, "maintenance_blocked", False):
+                self.maintenance_blocked = False
+                self._set_run_controls_enabled(True)
+
         # erori API/HTTP
         if resp.get("error"):
             http_code = resp.get("_http", 0)
@@ -2272,6 +2383,17 @@ class FacepostApp:
             save_config(CONFIG)
 
             resp = check_license(email, CONFIG.get("device_id"))
+
+            # procesăm unificat (update UI + maintenance gate)
+            try:
+                self._process_license_check_response(resp, show_popups=(not from_scheduler))
+            except Exception:
+                pass
+
+            if getattr(self, "maintenance_blocked", False):
+                rollback_running()
+                return
+
             if resp.get("error"):
                 if not from_scheduler:
                     messagebox.showerror(
