@@ -2302,7 +2302,7 @@ class FacepostApp:
     def _hb_tick(self):
         # heartbeat periodic "idle" (nu blochează UI)
         try:
-            self._hb_send_async("idle", clear_error=True)
+            self._hb_send_async("idle")
         finally:
             self.root.after(int(HEARTBEAT_INTERVAL_SEC * 1000), self._hb_tick)
 
